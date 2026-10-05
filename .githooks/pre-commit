@@ -1,0 +1,21 @@
+#!/bin/sh
+# Refuse a commit that would add an API key, token, private key or credential file.
+# Runs before every commit (and so before the post-commit push).
+# Override for a false positive:  git commit --no-verify
+
+files=$(git diff --cached --name-only --diff-filter=ACMR |
+    grep -iE '(^|/)\.env($|\.)|\.pem$|\.key$|\.p12$|\.pfx$|id_(rsa|ed25519|ecdsa)|credentials|secrets?\.(json|ya?ml|toml)$|settings\.local\.json$')
+
+pattern='sk-ant-[A-Za-z0-9_-]{10,}|sk-[A-Za-z0-9]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|hf_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(api[_-]?key|secret|token|passw(or)?d)["'"'"' ]*[:=] *["'"'"'][^"'"'"' ]{12,}'
+
+# Only lines being added, and never this file's own pattern.
+hits=$(git diff --cached -U0 --diff-filter=ACMR -- . ':(exclude).githooks/pre-commit' |
+    grep -E '^\+[^+]' | grep -iE -- "$pattern")
+
+if [ -n "$files" ] || [ -n "$hits" ]; then
+    echo "pre-commit: commit blocked, this looks like a secret:" >&2
+    [ -n "$files" ] && echo "$files" | sed 's/^/  file: /' >&2
+    [ -n "$hits" ] && echo "$hits" | cut -c1-60 | sed 's/^/  line: /; s/$/.../' >&2
+    echo "Remove it (and rotate the key if it is real), then commit again." >&2
+    exit 1
+fi

@@ -1,0 +1,6 @@
+numpy>=1.24
+scipy>=1.10
+tornado>=6.3
+pyserial>=3.5
+pyadi-iio>=0.0.17
+pylibiio>=0.25

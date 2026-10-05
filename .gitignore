@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Recordings and bench captures
+*.npz
+
+# Secrets: never commit these (see .githooks/pre-commit)
+.env
+.env.*
+*.pem
+*.key
+*.tmp
+*.local.json
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

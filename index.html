@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse Radar Bring-up</title>
+<style>
+:root{
+  --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:13px/1.45 system-ui,Segoe UI,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--grid);position:sticky;top:0;background:var(--page);z-index:5;flex-wrap:wrap}
+h1{font-size:15px;margin:0;font-weight:600}
+h2{font-size:14px;margin:0 0 2px;font-weight:600}
+.sub{color:var(--ink2);margin:0 0 10px;max-width:95ch}
+main{padding:16px;display:grid;gap:16px;max-width:1500px;margin:auto}
+section{background:var(--surface);border:1px solid var(--grid);border-radius:8px;padding:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+button,select,input{font:inherit;color:var(--ink);background:#262625;border:1px solid var(--axis);border-radius:6px;padding:5px 10px}
+button{cursor:pointer}button:hover{border-color:var(--muted)}
+button.primary{background:#1c5cab;border-color:#1c5cab}
+button:disabled{opacity:.45;cursor:default}
+input[type=number]{width:84px}
+label{color:var(--ink2);display:inline-flex;gap:6px;align-items:center}
+.pill{padding:2px 9px;border-radius:99px;border:1px solid var(--axis);color:var(--ink2);white-space:nowrap}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--muted)}
+.good .dot{background:var(--good)}.warn .dot{background:var(--warn)}.crit .dot{background:var(--crit)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:right;padding:4px 8px;border-bottom:1px solid var(--grid);font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-weight:500}th:first-child,td:first-child{text-align:left}
+.chart{position:relative}
+.chart h3{font-size:12px;font-weight:600;margin:0 0 2px}
+.chart .cap{color:var(--muted);font-size:11px;margin:0 0 4px}
+.chart canvas{width:100%;height:220px;display:block}
+.legend{display:flex;gap:12px;font-size:11px;color:var(--ink2);margin-bottom:2px;flex-wrap:wrap}
+.legend i{display:inline-block;width:14px;height:2px;margin-right:5px;vertical-align:middle}
+.tip{position:absolute;pointer-events:none;background:#000d;border:1px solid var(--axis);border-radius:5px;padding:3px 7px;font-size:11px;white-space:nowrap;display:none;z-index:3}
+.tiles{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:12px}
+.tile{border:1px solid var(--grid);border-radius:8px;padding:8px 10px}
+.tile .k{color:var(--muted);font-size:11px}.tile .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.tile .n{color:var(--ink2);font-size:11px}
+#log{height:120px;overflow:auto;font:11px/1.5 ui-monospace,Consolas,monospace;color:var(--ink2);white-space:pre-wrap}
+#log .error{color:#e66767}#log .ok{color:var(--good)}
+.note{border-left:3px solid var(--warn);padding:6px 10px;background:#fab21912;color:var(--ink2);margin:8px 0}
+.hide{display:none}
+summary{cursor:pointer}
+.help{color:var(--ink2);max-width:105ch}.help h4{color:var(--ink);margin:14px 0 4px;font-size:13px}.help p,.help ul{margin:4px 0}.help code{background:#262625;padding:1px 5px;border-radius:4px;color:var(--ink)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Pulse Radar Bring-up · 5.8 GHz · 2T2R</h1>
+  <span id="conn" class="pill"><span class="dot"></span><span id="connTxt">not connected</span></span>
+  <span id="busy" class="pill hide">working…</span>
+  <span id="sum" class="pill"></span>
+</header>
+<main>
+
+<section>
+<details id="help">
+<summary><b>Help · the whole signal-processing chain</b></summary>
+<div class="help">
+<h4>1 · Waveform</h4>
+<p>One <b>frame</b> of <i>period</i> samples (default 1024) is loaded into the transmit buffer and played cyclically, so the radar emits an endless, exactly periodic pulse train. TX1 carries a linear-FM <b>up-chirp</b> at sample 0; TX2 carries a <b>down-chirp</b> at period/2. Each chirp is <i>pulse</i> samples long (default 256), sweeps <i>BW/fs × fs</i> (default 0.8 × 61.44 = 49 MHz) and has a 15 % raised-cosine (Tukey) edge taper so it does not splatter. Amplitude is half of DAC full scale. In live mode only the selected transmitter is on.</p>
+<p>Pulse repetition interval = period / fs = 16.7 µs. Transmit and receive run at the same time (the AD9361 is full duplex), so there is no blind range.</p>
+<h4>2 · Radio</h4>
+<p>AD9361, 2 TX + 2 RX, sharing one sample clock and one local-oscillator setting (default 5.8 GHz). RF bandwidth is set to 0.9 × fs (max 56 MHz). Receive gain is <b>manual</b> (no AGC), because AGC would modulate the very amplitude and phase the radar measures. Converters are 12-bit; all levels here are relative to converter full scale (dBFS).</p>
+<h4>3 · Capture and folding</h4>
+<p>Each capture is K contiguous periods from both receivers (K = 8 on the fast link, 4 on debug serial). Because the transmit train is exactly periodic and shares the receive clock, the capture is cut into K periods and <b>averaged coherently</b>: signal adds in voltage, noise in power, for 10·log10(K) dB of gain. The capture starts at an arbitrary point in the period; step 5 resolves that.</p>
+<h4>4 · Pulse compression</h4>
+<p>The averaged period is circularly cross-correlated with the transmitted chirp in the frequency domain: <code>h = IFFT( FFT(rx) · conj(FFT(ref)) · W ) / mean(|FFT(ref)|² · W)</code>. This gives the <b>delay profile</b> (channel impulse response) with 10·log10(pulse) = 24 dB of processing gain. <i>W</i> is a Hamming weighting across the chirp band: it lowers range sidelobes from −13 dB to about −30 dB at the cost of a 1.4× wider mainlobe. Without it, sidelobes of the strong direct leakage would bury nearby echoes. The normalisation makes <i>h</i> read directly as path gain.</p>
+<h4>5 · Delay anchoring</h4>
+<p>The strongest peak of the profile is the direct antenna-to-antenna leakage. Its index is taken as <b>delay bin 0</b> and bins −4…+19 are kept. One bin = c / (2·fs) = 2.44 m of range at 61.44 Msps; resolution is c / (2·BW) ≈ 3 m, widened to ≈ 4.3 m by the Hamming weighting. Phase is <b>not</b> normalised to the leakage: a person in the room sits in the same bin as the leakage, and normalising would erase them. This works because transmit and receive are phase-locked (measured capture-to-capture phase stability ≈ 0.5°).</p>
+<h4>6 · Quality metrics (sections 1, 2 and the tiles)</h4>
+<ul>
+<li><b>Digital loopback</b>: the AD9361 loops DAC-port samples to the ADC port; received samples are compared with the sent ones (≤ 1 LSB passes).</li>
+<li><b>ADC peak / clipped %</b>: largest I or Q sample; clipping must be 0.</li>
+<li><b>Raw SNR</b>: pulse power over the period-to-period variance. <b>Compressed SNR</b> adds the compression and averaging gain.</li>
+<li><b>Peak sidelobe</b>: highest lobe outside the mainlobe nulls within ±40 bins, relative to the peak. <b>Mainlobe</b>: −3 dB width.</li>
+<li><b>Phase jitter / amplitude ripple</b>: spread of the per-period complex peak inside one capture.</li>
+</ul>
+<h4>7 · Slow time</h4>
+<p>Every capture yields one complex delay profile, time-stamped on arrival. The last N profiles (N = “Frames per Doppler window”) form the slow-time buffer of each receiver. Host timing is not perfectly regular, so before any FFT the buffer is linearly re-sampled onto a uniform grid; the effective pulse-repetition frequency (PRF) is the measured mean frame rate (≈ 100–300 Hz over USB). Maximum unaliased speed = PRF · λ / 4.</p>
+<h4>8 · Static-scene removal</h4>
+<p>A background profile is tracked with an exponential average (time constant ≈ 3 s) and subtracted: this is the <b>“static scene removed”</b> plot. For Doppler processing the slow-time mean of each bin is subtracted instead.</p>
+<h4>9 · Delay–Doppler map</h4>
+<p>Each delay bin’s slow-time series is Hann-windowed and Fourier transformed. Doppler frequency f maps to radial velocity v = f · λ / 2 (λ = 51.7 mm at 5.8 GHz); positive = approaching. Velocity resolution = λ · PRF / (2·N).</p>
+<h4>10 · Optional slow-time and Doppler filters</h4>
+<p>All are off-able; with everything off the plots show the raw slow-time spectrum. They act on the uniformly re-sampled slow-time buffer of each delay bin, in this order:</p>
+<ul>
+<li><b>DC removal (mean)</b>: subtracts the slow-time average of each delay bin, i.e. the static scene and the leakage. With it off, the zero-Doppler line dominates the map.</li>
+<li><b>Savitzky–Golay</b>: a least-squares polynomial of the chosen <i>order</i> is fitted in a sliding <i>window</i> of frames, on I and Q separately. <i>Detrend</i> subtracts the fit, removing drift and slow movers while leaving fast motion almost untouched and without the ringing of a sharp filter; <i>smooth</i> keeps the fit, which suppresses fast components and noise. Its −3 dB point is roughly (order + 1) · PRF / (3.2 · window).</li>
+<li><b>High-pass</b>: zero-phase 4th-order Butterworth (applied forwards and backwards) at the chosen cutoff. Sharper than Savitzky–Golay detrending, but with edge transients at the ends of the buffer.</li>
+<li><b>FFT window</b>: Hann (default), Hamming, Blackman or rectangular taper before the Doppler FFT. Blackman has the lowest leakage from the zero-Doppler line, rectangular the finest resolution.</li>
+<li><b>Doppler keep above / below</b>: band limits applied to the spectrum itself with smooth 4th-order edges, |H|² = 1 / (1 + (f_lo/f)⁸) and 1 / (1 + (f/f_hi)⁸). 0 disables an edge. 1 Hz of Doppler is 25.8 mm/s.</li>
+</ul>
+<p>The plots show exactly what these filters leave; nothing is blanked or filled. Independently of the filters, detection, motion energy and angle ignore zero Doppler and two bins either side.</p>
+<h4>11 · Detection, motion energy, displacement</h4>
+<ul>
+<li><b>Doppler peak</b>: strongest cell in delay bins −1…+3 away from zero Doppler, after the selected filters; its SNR is measured against the median along Doppler in the same delay bin. A circle is drawn above 18 dB.</li>
+<li><b>Motion energy</b>: total filtered Doppler power away from zero in those bins, relative to its own 20th-percentile level over the last ≈ 20 s. Above 10 dB counts as motion. The quiet level is learned because it is set by leakage jitter, not thermal noise.</li>
+<li><b>Displacement</b>: phase of (profile − background) in the most active near bin, unwrapped capture by capture: Δr = −Δφ · λ / (4π), i.e. 25.8 mm per full turn. It only integrates while motion energy is above 6 dB and the return is above twice the quiet level; otherwise residual noise would random-walk. This trace is not Doppler-filtered.</li>
+</ul>
+<h4>12 · Angle from the two receivers</h4>
+<p>For each Doppler bin the <b>cross-spectrum</b> S₁₂ = Σ X₁ · conj(X₂) is summed over the near delay bins. Working in the Doppler domain means only moving reflectors contribute; the static scene and the leakage are excluded. S₁₂ is averaged over a few looks (≈ 0.3 s) and only Doppler bins standing at least 6 dB above the median are used, so empty bins do not dilute the estimate. The phase of the summed S₁₂ is the inter-receiver phase difference Δφ, and <code>θ = asin( (Δφ − offset) · λ / (2π · d) )</code>, with d the receive-antenna spacing. <b>Coherence</b> = |ΣS₁₂| / √(ΣP₁ · ΣP₂): near 1 means one dominant direction; low means several movers or multipath, and the angle should not be trusted.</p>
+<p>Limits: (a) the two receive chains have an unknown fixed phase offset, so move straight in front of the antennas and press <b>Set current direction as 0°</b>; (b) at 2-inch spacing d ≈ 0.98 λ, so angles are unambiguous only within about ±31° and wrap beyond that; (c) two receivers resolve one angle, in the plane containing both antennas, for one dominant mover; (d) the sign convention (+ = towards RX1) should be checked once by moving to a known side.</p>
+</div>
+</details>
+</section>
+
+<section>
+  <h2>0 · Radio</h2>
+  <p class="sub">Connect, then set the waveform. “Auto” uses the fast libiio link if the board’s data port is reachable and otherwise falls back to the slow debug-serial path.</p>
+  <div class="row">
+    <label>Link <select id="transport"><option value="auto">auto</option><option value="iio">libiio (live)</option><option value="serial">debug serial (slow)</option><option value="sim">simulator</option></select></label>
+    <label>URI <input id="uri" placeholder="ip:192.168.2.1" style="width:150px"></label>
+    <button class="primary" onclick="send({cmd:'connect',transport:$('transport').value,uri:$('uri').value})">Connect</button>
+    <button onclick="send({cmd:'disconnect'})">Disconnect</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label>Sample rate <select id="fs"><option value="61440000">61.44 Msps</option><option value="56000000">56 Msps</option><option value="40000000">40 Msps</option><option value="30720000">30.72 Msps</option><option value="20000000">20 Msps</option></select></label>
+    <label>LO (GHz) <input id="lo" type="number" step="0.005" value="5.8"></label>
+    <label>Chirp BW / fs <input id="bw" type="number" step="0.05" min="0.1" max="0.9" value="0.8"></label>
+    <label>Pulse (samples) <select id="plen"><option>64</option><option>128</option><option selected>256</option><option>512</option></select></label>
+    <label>Period <select id="period"><option>512</option><option selected>1024</option><option>2048</option></select></label>
+    <label>Sidelobe window <select id="window"><option value="hamming">Hamming</option><option value="none">none</option></select></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label>TX1 gain dB <input id="txg0" type="number" step="1" min="-60" max="0" value="-10"></label>
+    <label>TX2 <input id="txg1" type="number" step="1" min="-60" max="0" value="-10"></label>
+    <label>RX1 gain dB <input id="rxg0" type="number" step="1" min="0" max="70" value="20"></label>
+    <label>RX2 <input id="rxg1" type="number" step="1" min="0" max="70" value="20"></label>
+    <button onclick="applyCfg()">Apply</button>
+    <span id="info" class="sub" style="margin:0"></span>
+  </div>
+</section>
+
+<section>
+  <h2>1 · Are the samples reaching the transmitter? (digital loopback)</h2>
+  <p class="sub">Loops the DAC-port samples straight back into the ADC port inside the AD9361, with no RF involved. The received pulse must equal the sent one to the bit.</p>
+  <div class="row"><button class="primary" onclick="send({cmd:'step_digital'})">Run digital loopback</button><span id="digVerdict"></span></div>
+  <div class="grid" id="digCharts" style="margin-top:10px"></div>
+</section>
+
+<section>
+  <h2>2 · Are the pulses going out and coming back? (over the air)</h2>
+  <p class="sub">Each transmitter fires alone; both receivers listen. With antennas 2″ apart the direct antenna-to-antenna leakage is the reference signal: its envelope, spectrum and compressed shape show transmit and receive quality.</p>
+  <div class="row"><button class="primary" onclick="send({cmd:'step_ota'})">Run over-the-air test</button>
+    <button onclick="autoGain()" id="agBtn" disabled>Set RX gains for −12 dBFS</button><span id="otaVerdict"></span></div>
+  <div id="otaTable" style="margin-top:10px;overflow:auto"></div>
+  <div class="grid" id="otaCharts" style="margin-top:10px"></div>
+</section>
+
+<section>
+  <h2>3 · Live: pulse quality, delay–Doppler, motion</h2>
+  <p class="sub">Continuous pulse train on one transmitter. Each capture is compressed to a range profile anchored on the direct path; static returns are subtracted, and what remains is tracked over slow time.</p>
+  <div class="row">
+    <button class="primary" id="liveBtn" onclick="toggleLive()">Start live</button>
+    <label>TX <select id="tx" onchange="pathCfg()"><option value="0">TX1</option><option value="1">TX2</option></select></label>
+    <label>RX <select id="rx" onchange="pathCfg()"><option value="0">RX1</option><option value="1" selected>RX2</option></select></label>
+    <label>Frames per Doppler window <select id="cpi" onchange="pathCfg()"><option>64</option><option selected>128</option><option>256</option></select></label>
+    <button onclick="send({cmd:'reset_bg'});hist.length=0;wf.length=0">Reset background</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label>RX1–RX2 spacing mm <input id="dspace" type="number" step="0.1" min="5" value="50.8" onchange="softCfg()"></label>
+    <button onclick="send({cmd:'angle_cal'})">Set current direction as 0°</button>
+    <button onclick="send({cmd:'angle_cal',clear:true})">Clear angle reference</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <b style="font-weight:600">Slow-time filters</b>
+    <label><input type="checkbox" id="f_dc" checked onchange="filtCfg()"> DC removal (mean)</label>
+    <label>High-pass <select id="f_hp_hz" onchange="filtCfg()"><option value="0">off</option><option>1</option><option>2</option><option>5</option><option>10</option><option>20</option><option>40</option></select> Hz</label>
+    <label>Savitzky–Golay <select id="f_sg" onchange="filtCfg()"><option value="off">off</option><option value="detrend">detrend (subtract fit)</option><option value="smooth">smooth (keep fit)</option></select></label>
+    <label>window <select id="f_sg_win" onchange="filtCfg()"><option>5</option><option>9</option><option selected>15</option><option>25</option><option>41</option><option>61</option></select> frames</label>
+    <label>order <select id="f_sg_order" onchange="filtCfg()"><option>1</option><option>2</option><option selected>3</option><option>4</option></select></label>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <b style="font-weight:600">Doppler filters</b>
+    <label>Keep above <input id="f_band_lo" type="number" min="0" step="1" value="0" onchange="filtCfg()"> Hz</label>
+    <label>Keep below <input id="f_band_hi" type="number" min="0" step="1" value="0" onchange="filtCfg()"> Hz</label>
+    <label>FFT window <select id="f_window" onchange="filtCfg()"><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rect">rectangular</option></select></label>
+    <button onclick="filtReset()">All filters off</button>
+    <span id="hpInfo" class="sub" style="margin:0"></span>
+  </div>
+  <div id="slowNote" class="note hide"></div>
+  <div class="tiles" id="tiles" style="margin-top:12px"></div>
+  <div class="grid">
+    <div class="chart" id="cProf"></div>
+    <div class="chart" id="cMti"></div>
+    <div class="chart" id="cRD"></div>
+    <div class="chart" id="cWf"></div>
+    <div class="chart" id="cDisp"></div>
+    <div class="chart" id="cMot"></div>
+    <div class="chart" id="cAng"></div>
+    <div class="chart" id="cPh"></div>
+    <div class="chart" id="cAngD"></div>
+    <div class="chart" id="cCoh"></div>
+  </div>
+</section>
+
+<section><h2>Log</h2><div id="log"></div></section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL=[css('--s1'),css('--s2'),css('--s3'),css('--s4')];
+const fmt=(v,d=1)=>v==null||!isFinite(v)?'–':(+v).toFixed(d);
+let ws,state={connected:false,kind:null,cfg:{}},live=false,lastOta=null;
+const hist=[],wf=[];
+
+function connectWS(){
+  ws=new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage=e=>handle(JSON.parse(e.data));
+  // ?auto=sim|serial|iio|auto runs every step unattended
+  const auto=new URLSearchParams(location.search).get('auto');
+  ws.onopen=()=>{if(auto&&!connectWS.done){connectWS.done=1;send({cmd:'connect',transport:auto});send({cmd:'step_digital'});send({cmd:'step_ota'});send({cmd:'live_start'})}};
+  ws.onclose=()=>{setConn(false,'server offline');setTimeout(connectWS,1500)};
+}
+function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
+function setConn(ok,txt,cls){$('conn').className='pill '+(ok?(cls||'good'):'');$('connTxt').textContent=txt}
+
+// ---------------------------------------------------------------- charts
+function chartShell(el,title,cap,legend){
+  if(typeof el==='string')el=$(el);
+  if(!el._c){
+    el.classList.add('chart');
+    el.innerHTML='<h3></h3><p class="cap"></p><div class="legend"></div><canvas></canvas><div class="tip"></div>';
+    el._c=el.querySelector('canvas');el._tip=el.querySelector('.tip');
+    el._c.addEventListener('mousemove',ev=>{el._mx=ev.offsetX;el._my=ev.offsetY;el._hover&&el._hover()});
+    el._c.addEventListener('mouseleave',()=>{el._mx=null;el._tip.style.display='none';el._redraw&&el._redraw()});
+  }
+  el.querySelector('h3').textContent=title;el.querySelector('.cap').textContent=cap||'';
+  el.querySelector('.legend').innerHTML=(legend||[]).map(l=>`<span><i style="background:${l.color};${l.dash?'height:0;border-top:2px dashed '+l.color+';background:none':''}"></i>${l.label}</span>`).join('');
+  const c=el._c,r=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;
+  if(c.width!==w*r||c.height!==h*r){c.width=w*r;c.height=h*r}
+  const g=c.getContext('2d');g.setTransform(r,0,0,r,0,0);g.clearRect(0,0,w,h);
+  return {el,g,w,h};
+}
+function ticks(a,b,n){const s=(b-a)/n,p=Math.pow(10,Math.floor(Math.log10(s))),m=[1,2,5,10].find(m=>m*p>=s)*p;const o=[];for(let v=Math.ceil(a/m)*m;v<=b+1e-9;v+=m)o.push(+v.toFixed(10));return o}
+function axes(g,w,h,x0,x1,y0,y1,xl,yl,xf=0.5){
+  const L=46,R=10,T=6,B=30,pw=w-L-R,ph=h-T-B;
+  const X=v=>L+(v-x0)/(x1-x0)*pw,Y=v=>T+(1-(v-y0)/(y1-y0))*ph;
+  g.font='10px system-ui';g.fillStyle=css('--muted');g.strokeStyle=css('--grid');g.lineWidth=1;
+  g.textAlign='right';g.textBaseline='middle';
+  for(const v of ticks(y0,y1,5)){g.beginPath();g.moveTo(L,Y(v));g.lineTo(w-R,Y(v));g.stroke();g.fillText(v,L-5,Y(v))}
+  g.textAlign='center';g.textBaseline='top';
+  for(const v of ticks(x0,x1,7)){g.fillText(v,X(v),h-B+4)}
+  g.strokeStyle=css('--axis');g.beginPath();g.moveTo(L,T+ph);g.lineTo(w-R,T+ph);g.stroke();
+  g.fillText(xl||'',L+pw*xf,h-13);
+  g.save();g.translate(10,T+ph/2);g.rotate(-Math.PI/2);g.fillText(yl||'',0,-6);g.restore();
+  return {X,Y,L,R,T,B,pw,ph};
+}
+// series: [{x:[],y:[],label,color,dash}]
+function lineChart(el,title,cap,series,o={}){
+  const draw=()=>{
+    const {g,w,h,el:E}=chartShell(el,title,cap,series.length>1?series:null);
+    const xs=series.flatMap(s=>s.x),ys=series.flatMap(s=>s.y).filter(v=>v!=null);
+    if(!xs.length)return;
+    let x0=o.x0??Math.min(...xs),x1=o.x1??Math.max(...xs),y0=o.y0??Math.min(...ys),y1=o.y1??Math.max(...ys);
+    if(y1-y0<1e-9){y0-=1;y1+=1} if(o.y0==null){const p=(y1-y0)*.06;y0-=p;y1+=p}
+    if(x1-x0<1e-9)x1=x0+1;
+    const a=axes(g,w,h,x0,x1,y0,y1,o.xl,o.yl);
+    g.save();g.beginPath();g.rect(a.L,a.T,a.pw,a.ph);g.clip();
+    for(const m of o.marks||[]){g.strokeStyle=css('--muted');g.setLineDash([3,3]);g.beginPath();
+      if(m.x!=null){g.moveTo(a.X(m.x),a.T);g.lineTo(a.X(m.x),a.T+a.ph)}else{g.moveTo(a.L,a.Y(m.y));g.lineTo(w-a.R,a.Y(m.y))}
+      g.stroke();g.setLineDash([]);g.fillStyle=css('--muted');g.textAlign='left';g.textBaseline='top';
+      if(m.label)m.x!=null?g.fillText(m.label,a.X(m.x)+3,a.T+2):g.fillText(m.label,a.L+3,a.Y(m.y)+2)}
+    for(const s of series){g.strokeStyle=s.color;g.lineWidth=2;g.setLineDash(s.dash?[5,4]:[]);g.lineJoin='round';g.beginPath();let pen=false;
+      for(let i=0;i<s.x.length;i++){if(s.y[i]==null){pen=false;continue}const px=a.X(s.x[i]),py=a.Y(Math.max(y0-1e9,s.y[i]));pen?g.lineTo(px,py):g.moveTo(px,py);pen=true}
+      g.stroke();g.setLineDash([])}
+    g.restore();
+    E._hover=()=>{draw();if(E._mx==null)return;const xv=x0+(E._mx-a.L)/a.pw*(x1-x0);if(xv<x0||xv>x1){E._tip.style.display='none';return}
+      const g2=E._c.getContext('2d');g2.strokeStyle=css('--muted');g2.lineWidth=1;g2.beginPath();g2.moveTo(E._mx,a.T);g2.lineTo(E._mx,a.T+a.ph);g2.stroke();
+      const rows=series.map(s=>{let bi=0,bd=1e99;for(let i=0;i<s.x.length;i++){const d=Math.abs(s.x[i]-xv);if(d<bd){bd=d;bi=i}}
+        if(s.y[bi]!=null){g2.fillStyle=s.color;g2.beginPath();g2.arc(a.X(s.x[bi]),a.Y(s.y[bi]),4,0,7);g2.fill()}
+        return `<span style="color:${s.color}">■</span> ${s.label||''} <b>${fmt(s.y[bi],o.dec??1)}</b>`});
+      E._tip.innerHTML=`${o.xl||'x'} ${fmt(xv,o.xdec??2)}<br>`+rows.join('<br>');E._tip.style.display='block';
+      E._tip.style.left=Math.min(E._mx+12,w-150)+'px';E._tip.style.top=(E._c.offsetTop+8)+'px'};
+    E._redraw=draw;
+  };draw();
+}
+// sequential single-hue ramp, dark = low on the dark surface
+const RAMP=['#141a22','#0d366b','#184f95','#256abf','#3987e5','#6da7ec','#9ec5f4','#cde2fb'].map(h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16)));
+function ramp(t){t=Math.max(0,Math.min(1,t))*(RAMP.length-1);const i=Math.min(RAMP.length-2,Math.floor(t)),f=t-i;return RAMP[i].map((c,k)=>Math.round(c+(RAMP[i+1][k]-c)*f))}
+// z[row][col]; rows -> y (ys ascending), cols -> x
+function heatmap(el,title,cap,z,xs,ys,o={}){
+  const draw=()=>{
+    const {g,w,h,el:E}=chartShell(el,title,cap);
+    if(!z||!z.length)return;
+    const ny=z.length,nx=z[0].length,dx=(xs[nx-1]-xs[0])/Math.max(1,nx-1)||1,dy=(ys[ny-1]-ys[0])/Math.max(1,ny-1)||1;
+    const x0=xs[0]-dx/2,x1=xs[nx-1]+dx/2,y0=ys[0]-dy/2,y1=ys[ny-1]+dy/2;
+    const a=axes(g,w,h,x0,x1,y0,y1,o.xl,o.yl,0.2);
+    const off=document.createElement('canvas');off.width=nx;off.height=ny;const og=off.getContext('2d'),im=og.createImageData(nx,ny);
+    for(let r=0;r<ny;r++)for(let c=0;c<nx;c++){const v=z[ny-1-r][c],col=ramp(((v??o.lo)-o.lo)/(o.hi-o.lo)),k=(r*nx+c)*4;im.data[k]=col[0];im.data[k+1]=col[1];im.data[k+2]=col[2];im.data[k+3]=255}
+    og.putImageData(im,0,0);g.imageSmoothingEnabled=false;g.drawImage(off,a.L,a.T,a.pw,a.ph);
+    for(const m of o.marks||[]){g.strokeStyle='#ffffff';g.lineWidth=1.5;g.beginPath();g.arc(a.X(m.x),a.Y(m.y),7,0,7);g.stroke()}
+    // colour key
+    for(let i=0;i<60;i++){const c=ramp(i/59);g.fillStyle=`rgb(${c})`;g.fillRect(w-a.R-64+i,h-11,1,6)}
+    g.fillStyle=css('--muted');g.textAlign='right';g.textBaseline='middle';g.fillText(`${fmt(o.lo,0)} … ${fmt(o.hi,0)} ${o.unit||'dB'}`,w-a.R-70,h-8);
+    E._hover=()=>{if(E._mx==null)return;const c=Math.floor((E._mx-a.L)/a.pw*nx),r=Math.floor((1-(E._my-a.T)/a.ph)*ny);
+      if(c<0||c>=nx||r<0||r>=ny){E._tip.style.display='none';return}
+      E._tip.innerHTML=`${o.xl} ${fmt(xs[c],o.xdec??2)}<br>${o.yl} ${fmt(ys[r],o.ydec??2)}<br><b>${fmt(z[r][c],1)} ${o.unit||'dB'}</b>`;
+      E._tip.style.display='block';E._tip.style.left=Math.min(E._mx+12,w-140)+'px';E._tip.style.top=(E._c.offsetTop+E._my+10)+'px'};
+    E._redraw=draw;
+  };draw();
+}
+function verdict(cls,txt){return `<span class="pill ${cls}"><span class="dot"></span>${txt}</span>`}
+function tile(k,v,n,cls){return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="n ${cls||''}">${cls?'<span class="dot"></span>':''}${n||''}</div></div>`}
+
+// ---------------------------------------------------------------- messages
+function handle(m){
+  if(m.type==='log'){const d=document.createElement('div');d.className=m.level;d.textContent=`${m.t}  ${m.msg}`;$('log').prepend(d)}
+  else if(m.type==='busy'){$('busy').classList.toggle('hide',!m.on);$('busy').textContent='working… '+(m.what||'')}
+  else if(m.type==='status')onStatus(m);
+  else if(m.type==='digital')onDigital(m);
+  else if(m.type==='ota')onOta(m);
+  else if(m.type==='live'){live=m.on;$('liveBtn').textContent=live?'Stop live':'Start live'}
+  else if(m.type==='frame')onFrame(m);
+}
+function onStatus(m){
+  state=m;
+  if(!m.connected){setConn(false,'not connected');$('info').textContent='';$('sum').textContent='';return}
+  const i=m.info,slow=m.kind==='serial',sim=m.kind==='sim';
+  setConn(true,i.transport,slow||sim?'warn':'good');
+  $('sum').textContent=`${(i.fs/1e6).toFixed(2)} Msps · LO ${(i.rx_lo/1e9).toFixed(3)} GHz · range bin ${m.range_bin_m.toFixed(2)} m · resolution ${m.range_res_m.toFixed(2)} m`;
+  $('info').textContent=`${i.model} · ${i.chip} · ${i.fw}` + (i.temp_c?` · ${fmt(i.temp_c,0)} °C`:'');
+  const c=m.cfg;$('fs').value=c.fs;$('lo').value=c.lo/1e9;$('bw').value=c.bw_frac;$('plen').value=c.pulse_len;$('period').value=c.period;$('window').value=c.window;
+  [0,1].forEach(k=>{$('txg'+k).value=c.tx_gain[k];$('rxg'+k).value=c.rx_gain[k]});
+  $('tx').value=c.tx;$('rx').value=c.rx;$('cpi').value=c.cpi;$('dspace').value=c.rx_spacing_mm;$('f_dc').checked=!!c.f_dc;FKEYS.forEach(k=>{$(k).value=c[k]});
+  const n=$('slowNote');n.classList.toggle('hide',!(slow||sim));
+  n.textContent=slow?'Debug-serial link: about one frame per second. Pulse quality and range profile are valid, but Doppler and displacement need tens of frames per second — connect the board’s data USB or Ethernet port and reconnect with “libiio”.':'Simulator: synthetic scene with a target oscillating around 2.5 m. Not hardware.';
+}
+function applyCfg(){
+  send({cmd:'apply',cfg:{fs:+$('fs').value,lo:+$('lo').value*1e9,bw_frac:+$('bw').value,pulse_len:+$('plen').value,period:+$('period').value,window:$('window').value,
+    tx_gain:[+$('txg0').value,+$('txg1').value],rx_gain:[+$('rxg0').value,+$('rxg1').value]}});
+}
+function pathCfg(){hist.length=0;wf.length=0;send({cmd:'apply',cfg:{tx:+$('tx').value,rx:+$('rx').value,cpi:+$('cpi').value}})}
+const FKEYS=['f_hp_hz','f_sg','f_sg_win','f_sg_order','f_band_lo','f_band_hi','f_window'];
+function softCfg(){send({cmd:'apply',cfg:{rx_spacing_mm:+$('dspace').value}})}
+function filtCfg(){wf.length=0;const c={f_dc:$('f_dc').checked};FKEYS.forEach(k=>{const v=$(k).value;c[k]=(k==='f_sg'||k==='f_window')?v:+v});send({cmd:'apply',cfg:c})}
+function filtReset(){$('f_dc').checked=false;$('f_hp_hz').value=0;$('f_sg').value='off';$('f_band_lo').value=0;$('f_band_hi').value=0;$('f_window').value='hann';filtCfg()}
+function toggleLive(){send({cmd:live?'live_stop':'live_start'});if(!live){hist.length=0;wf.length=0}}
+
+function onDigital(m){
+  const ok=m.results.every(r=>r.pass);
+  $('digVerdict').innerHTML=verdict(ok?'good':'crit',ok?'PASS — both transmit sample paths are bit-exact':'FAIL — samples are being altered or dropped');
+  const box=$('digCharts');box.innerHTML='';
+  for(const r of m.results){const d=document.createElement('div');box.appendChild(d);
+    lineChart(d,`TX${r.tx} → RX${r.tx}, in-phase samples`,`max error ${fmt(r.max_err_lsb,1)} LSB · other receiver peak ${fmt(r.other_rx_peak_lsb,0)} LSB`,
+      [{x:r.n,y:r.tx_i,label:'sent',color:COL[0]},{x:r.n,y:r.rx_i,label:'received',color:COL[1],dash:true}],{xl:'sample',yl:'full scale',dec:4,xdec:0})}
+  redrawAll();
+}
+function grade(v,good,warn,hi=true){if(v==null)return'crit';return (hi?v>=good:v<=good)?'good':(hi?v>=warn:v<=warn)?'warn':'crit'}
+function onOta(m){
+  lastOta=m;$('agBtn').disabled=false;
+  let rows='',allGood=true;
+  for(const r of m.results)r.paths.forEach((q,j)=>{const s=r.stats[j];
+    const g=[grade(q.comp_snr_db,30,20),grade(s.clip_pct,0.01,1,false),grade(q.phase_jitter_deg,2,6,false)];
+    const w=g.includes('crit')?'crit':g.includes('warn')?'warn':'good';if(w!=='good')allGood=false;
+    rows+=`<tr><td>TX${r.tx} → RX${j+1}</td><td>${fmt(q.peak_db)}</td><td>${fmt(s.peak_dbfs)}</td><td>${fmt(s.clip_pct,2)}</td><td>${fmt(q.raw_snr_db)}</td><td>${fmt(q.comp_snr_db)}</td><td>${fmt(q.pslr_db)}</td><td>${fmt(q.width_m,2)}</td><td>${fmt(q.dyn_range_db)}</td><td>${fmt(q.amp_ripple_db,2)}</td><td>${fmt(q.phase_jitter_deg,2)}</td><td>${fmt(q.phase_deg,0)}</td><td>${verdict(w,w==='good'?'good':w==='warn'?'marginal':'poor')}</td></tr>`});
+  $('otaTable').innerHTML=`<table><tr><th>path</th><th>path gain dB</th><th>ADC peak dBFS</th><th>clipped %</th><th>raw SNR dB</th><th>compressed SNR dB</th><th>peak sidelobe dB</th><th>mainlobe m</th><th>dyn. range dB</th><th>pulse-to-pulse amp dB</th><th>phase jitter °</th><th>phase °</th><th></th></tr>${rows}</table>`;
+  $('otaVerdict').innerHTML=verdict(allGood?'good':'warn',allGood?'all four paths coherent and clean':'pulses received; some paths weak — see table');
+  const box=$('otaCharts');box.innerHTML='';
+  for(const r of m.results){
+    const mk=()=>{const d=document.createElement('div');box.appendChild(d);return d};
+    lineChart(mk(),`TX${r.tx} pulse envelope`,'transmitted shape (scaled) against what each receiver saw',
+      [{x:r.t_us,y:r.env_db[0],label:'RX1',color:COL[0]},{x:r.t_us,y:r.env_db[1],label:'RX2',color:COL[1]},{x:r.t_us,y:r.tx_env_db.map(v=>v<-150?null:v),label:'sent',color:COL[2],dash:true}],{xl:'time µs',yl:'dBFS',y0:-80,y1:0});
+    lineChart(mk(),`TX${r.tx} pulse spectrum`,'received curves should follow the sent shape across the whole chirp band',
+      [{x:r.f_mhz,y:r.spec_db[0],label:'RX1',color:COL[0]},{x:r.f_mhz,y:r.spec_db[1],label:'RX2',color:COL[1]},{x:r.f_mhz,y:r.tx_spec_db,label:'sent',color:COL[2],dash:true}],{xl:'baseband MHz',yl:'dB',y0:-110,y1:-20});
+    lineChart(mk(),`TX${r.tx} compressed pulse (delay profile)`,`bin 0 = direct antenna leakage · one bin = ${m.bin_m.toFixed(2)} m`,
+      [{x:r.bins,y:r.profile_db[0],label:'RX1',color:COL[0]},{x:r.bins,y:r.profile_db[1],label:'RX2',color:COL[1]}],{xl:'delay bin',yl:'dB',y0:-110,y1:0});
+  }
+  redrawAll();
+}
+function autoGain(){if(!lastOta)return;
+  const g=[0,1].map(j=>Math.min(...lastOta.results.map(r=>r.paths[j].suggest_rx_gain)));
+  $('rxg0').value=g[0];$('rxg1').value=g[1];
+  send({cmd:'apply',cfg:{tx_gain:[+$('txg0').value,+$('txg1').value],rx_gain:g}});send({cmd:'step_ota'});
+}
+function onFrame(m){
+  const q=m.quality[m.rx-1],s=m.stats[m.rx-1],slow=state.kind==='serial';
+  const A=m.angle,angOk=A&&A.coh>0.5&&A.n_bins>=2&&m.motion_db>6;
+  hist.push({t:m.t,disp:m.disp_mm,mot:m.motion_db,ang:angOk?A.deg:null,ph:angOk?A.dphi_deg:null,coh:A?A.coh:null});
+  if(m.dopp_bin_hz!=null)$('hpInfo').textContent=`1 Hz = ${fmt(0.02584,4)} m/s · Doppler bin ${fmt(m.dopp_bin_hz,2)} Hz · span ±${fmt(m.prf/2,0)} Hz · 0 = edge off`;if(hist.length>450)hist.shift();
+  const moving=m.motion_db>10;
+  $('tiles').innerHTML=
+    tile('frame rate',fmt(m.fps,1)+' Hz',slow?'too slow for Doppler':`max |v| ${fmt((m.prf||m.fps)*0.0129,2)} m/s unaliased`,slow?'warn':'')+
+    tile('ADC peak',fmt(s.peak_dbfs)+' dBFS',s.clip_pct>0.01?'clipping':s.peak_dbfs<-30?'low — raise RX gain':'in range',s.clip_pct>0.01?'crit':s.peak_dbfs<-30?'warn':'good')+
+    tile('compressed SNR',fmt(q.comp_snr_db,0)+' dB','direct path',grade(q.comp_snr_db,30,20))+
+    tile('peak sidelobe',fmt(q.pslr_db,0)+' dB',`mainlobe ${fmt(q.width_m,1)} m`,grade(q.pslr_db,-20,-12,false))+
+    tile('phase jitter',fmt(q.phase_jitter_deg,2)+'°','pulse to pulse',grade(q.phase_jitter_deg,2,6,false))+
+    tile('motion energy',fmt(m.motion_db,0)+' dB',moving?'motion detected':'scene static',moving?'good':'')+
+    tile('displacement',fmt(m.disp_mm,1)+' mm',`radial, delay bin ${m.track_bin}`)+
+    tile('angle',A?fmt(A.deg,0)+'°':'–',A?`coherence ${fmt(A.coh,2)} · wraps beyond ±${fmt(A.amb_deg,0)}°`:'collecting frames',A?(angOk?'good':'warn'):'')+
+    tile('Doppler peak',m.det?fmt(m.det.vel,2)+' m/s':'–',m.det?`bin ${m.det.bin} · ${fmt(m.det.snr_db,0)} dB over Doppler floor`:'collecting frames');
+  lineChart('cProf',`Delay profile, TX${m.tx}`,`bin 0 = direct leakage · one bin = ${m.bin_m.toFixed(2)} m of range`,
+    [{x:m.bins,y:m.profile_db[0],label:'RX1',color:COL[0]},{x:m.bins,y:m.profile_db[1],label:'RX2',color:COL[1]}],{xl:'delay bin',yl:'dB',y0:-110,y1:0});
+  lineChart('cMti',`Static scene removed, TX${m.tx} → RX${m.rx}`,'what changed since the background was learned — a moving body shows up here',
+    [{x:m.mti_bins,y:m.mti_db,label:'residual',color:COL[m.rx-1]}],{xl:'delay bin',yl:'dB',y0:-130,y1:-20,xdec:0});
+  if(m.rd_db){
+    const hi=Math.max(m.rd_floor_db+45,-60),lo=m.rd_floor_db;
+    heatmap('cRD','Delay–Doppler map',`${m.vel.length} Doppler bins over ${fmt(m.vel.length/m.prf,1)} s · circle = strongest mover`,m.rd_db,m.rd_bins,m.vel,
+      {xl:'delay bin',yl:'velocity m/s',lo,hi,xdec:0,ydec:3,marks:m.det&&m.det.snr_db>18?[{x:m.det.bin,y:m.det.vel}]:[]});
+    wf.push(m.dopp_db);if(wf.length>150)wf.shift();
+    const z=m.vel.map((_,r)=>wf.map(col=>col[r]));
+    heatmap('cWf','Doppler over time (near bins)','micro-Doppler signature: + is towards the antennas',z,wf.map((_,i)=>i-wf.length+1),m.vel,{xl:'frames ago',yl:'velocity m/s',lo:lo+3,hi:hi+3,xdec:0,ydec:3});
+  }
+  const t=hist.map(h=>h.t);
+  lineChart('cDisp','Radial displacement from carrier phase','λ/2 = 25.8 mm per 360° · relative · only integrates while motion is detected',[{x:t,y:hist.map(h=>h.disp),label:'displacement',color:COL[0]}],{xl:'time s',yl:'mm',dec:1,xdec:1});
+  lineChart('cMot','Motion energy','Doppler power away from zero in the near bins, relative to the learned quiet level',[{x:t,y:hist.map(h=>h.mot),label:'motion',color:COL[0]}],{xl:'time s',yl:'dB',y0:-10,y1:50,marks:[{y:10,label:'detection threshold'}],xdec:1});
+  if(A){const lim=Math.min(90,Math.ceil(A.amb_deg/10)*10);
+    lineChart('cAng','Angle of the mover (RX1 vs RX2 phase)','shown while something moves and coherence > 0.5 · + = towards RX1',[{x:t,y:hist.map(h=>h.ang),label:'angle',color:COL[0]}],{xl:'time s',yl:'degrees',y0:-lim,y1:lim,marks:[{y:0}],dec:0,xdec:1});
+    lineChart('cPh','Inter-receiver phase of the mover','RX1 − RX2 phase of the moving return, after the 0° reference · wraps at ±180°',[{x:t,y:hist.map(h=>h.ph),label:'phase',color:COL[0]}],{xl:'time s',yl:'degrees',y0:-180,y1:180,marks:[{y:0}],dec:0,xdec:1});
+    lineChart('cAngD','Phase per Doppler bin','RX1 − RX2 phase of each velocity component that stands above the floor',[{x:m.vel,y:m.ph_dopp,label:'phase',color:COL[0]}],{xl:'velocity m/s',yl:'degrees',y0:-180,y1:180,marks:[{y:0}],dec:0,xdec:2});
+    lineChart('cCoh','Coherence between the receivers','1 = one clear direction · the angle is plotted above 0.5',[{x:t,y:hist.map(h=>h.coh),label:'coherence',color:COL[0]}],{xl:'time s',yl:'coherence',y0:0,y1:1,marks:[{y:0.5,label:'gate'}],dec:2,xdec:1})}
+}
+function redrawAll(){document.querySelectorAll('.chart').forEach(e=>e._redraw&&e._redraw())}
+addEventListener('resize',redrawAll);
+connectWS();
+</script>
+</body>
+</html>

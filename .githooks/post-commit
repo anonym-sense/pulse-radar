@@ -1,0 +1,5 @@
+#!/bin/sh
+# Push every commit to GitHub as soon as it is made.
+# Enable once per clone with:  git config core.hooksPath .githooks
+branch=$(git symbolic-ref --quiet --short HEAD) || exit 0
+git push --quiet origin "$branch" || echo "post-commit: push failed, run 'git push' manually" >&2
