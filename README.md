@@ -23,6 +23,13 @@ runs live delay–Doppler, motion and two-receiver angle processing.
    receivers. Optional slow-time filters: DC removal, Butterworth high-pass,
    Savitzky–Golay detrend/smooth, Doppler band limits, FFT window choice.
 
+4. **Two boards** — each board has its own tab with steps 1–3, so the boards
+   can be tested one at a time. The **Both boards** tab runs them together:
+   each board measures the angle of a moving hand between its own two
+   receivers, and because the two receive pairs sit at different places along
+   the array, the two angles together give a rough hand position (top view),
+   a combined angle, and a swipe/wave detector.
+
 The whole signal-processing chain is documented in the GUI's Help section.
 
 ## Setup
@@ -48,7 +55,17 @@ In the GUI choose a link and press **Connect**:
 | debug serial | only the board's UART console | about 1.5 captures/s |
 | simulator | nothing | synthetic scene |
 
-`auto` tries libiio first and falls back to the serial console. Appending
+`auto` tries libiio first and falls back to the serial console. With two
+boards plugged in, leave the URI empty and each board tab takes a USB board the
+other is not using (or press **Scan USB** and pick one). Both boards answer on
+192.168.2.1 and may report the same serial number, so the USB address
+(`usb:bus.dev.intf`) is what tells them apart. `--boards N` sets how many board
+tabs the server keeps (default 2).
+
+Two-board defaults: board A at 5.765 GHz, board B at 5.835 GHz, so neither
+board hears the other's chirp. The array geometry assumes two 2-inch receive
+pairs on one line with a 50 mm gap between them (A: −75.8, −25.0 mm;
+B: +25.0, +75.8 mm). Both can be changed in the **Both boards** tab. Appending
 `?auto=auto` (or `sim`, `serial`, `iio`) to the URL runs every step unattended.
 
 Command-line check without the GUI:
@@ -88,6 +105,13 @@ Not done or not verified:
   convention is unverified, the two receive chains need a zero reference set
   by hand, and at this antenna spacing the angle is ambiguous beyond about
   ±31°.
+- **Two-board position and angle** has only been checked in the simulator
+  (about 1° median angle error, about 1–3 cm position error, with ideal
+  signals). On the hardware, both boards run together at about 250 captures/s
+  each, and an empty scene gives no false angle, but a hand at a known position
+  has not been measured yet. With the two pairs only about 10 cm apart, range
+  is poorly determined beyond about 30–40 cm, and each pair still wraps
+  beyond ±31°.
 - **Range** is coarse: one delay bin is 2.44 m at 61.44 Msps, so a person in
   the room is in the same bin as the leakage. The radar shows that something
   moves and how fast, not where it is.
@@ -100,6 +124,20 @@ Not done or not verified:
 
 Transmitting needs to be legal where you are: check the rules for the band
 and power you use.
+
+## TODO
+
+- **Check the two-board hand angle and position against a camera.** Film the
+  hand with a camera at a known position relative to the antenna array, track
+  the hand in each frame (for example with a hand-landmark model), convert it
+  to array coordinates (x across the antennas, z out from them), and log it
+  with timestamps next to the radar's combined angle, per-board angles and
+  position estimate. This gives:
+  - the real angle and position error, in place of simulator-only numbers;
+  - the sign convention and RX1/RX2 order for each board;
+  - a calibration taken from the camera's hand position instead of a hand
+    held by eye at 30 cm;
+  - how far out in range the position estimate is still usable.
 
 ## License
 

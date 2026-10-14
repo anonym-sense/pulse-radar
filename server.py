@@ -1,9 +1,11 @@
-"""Pulse-radar bring-up GUI server.
+"""Pulse-radar bring-up GUI server, for one or more boards.
 
-    py -3.11 server.py [--port 8765] [--transport auto|iio|serial|sim]
+    py -3.11 server.py [--port 8765] [--transport auto|iio|serial|sim] [--boards 2]
 
-Open http://localhost:8765 . All radio access happens on one worker thread;
-results are pushed to the browser over a websocket.
+Open http://localhost:8765 . Each board has its own Engine and its own worker
+thread (all access to that board's radio happens there); a Fusion thread
+combines the boards' live angle estimates. Results go to the browser over a
+websocket, tagged with the board index.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ import tornado.web
 import tornado.websocket
 
 import radar_dsp as dsp
-from radios import RX_FS, TX_FS, open_radio
+from radios import RX_FS, TX_FS, open_radio, scan_usb
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 N_NEG, N_RANGE = 4, 24          # range bins kept: -4 .. +19 around the direct path
@@ -34,14 +36,27 @@ DEFAULTS = {
     "tx_gain": [-10.0, -10.0], "rx_gain": [30.0, 30.0],
     "tx": 0, "rx": 1, "window": "hamming", "periods": 0, "cpi": 128,
     "rx_spacing_mm": 50.8, "angle_cal_deg": 0.0,
+    "rx_x_mm": [-25.4, 25.4],   # RX1, RX2 position along the array line (multi-board geometry)
     # slow-time / Doppler filters (all optional; defaults give the plain display)
     "f_dc": True, "f_hp_hz": 0.0, "f_sg": "off", "f_sg_win": 15, "f_sg_order": 3,
     "f_band_lo": 0.0, "f_band_hi": 0.0, "f_window": "hann",
 }
 
+# Per-board defaults. Both boards transmit at once in the combined view, so their
+# LOs are 70 MHz apart: wider than either chirp (0.8 x 61.44 = 49 MHz), so neither
+# board's matched filter responds to the other's pulses, and both stay inside the
+# 5.725-5.875 GHz band. Geometry: two 2-inch receive pairs on one line with a
+# 50 mm gap between them, array centre at x = 0.
+BOARD_DEFAULTS = [
+    {"lo": 5.765e9, "port": "COM5", "rx_x_mm": [-75.8, -25.0]},
+    {"lo": 5.835e9, "port": "COM6", "rx_x_mm": [25.0, 75.8]},
+]
+BOARD_NAMES = "ABCDEFGH"
+
 # settings that change processing only, not the radio or the waveform
 FILTER_KEYS = {"f_dc", "f_hp_hz", "f_sg", "f_sg_win", "f_sg_order", "f_band_lo", "f_band_hi", "f_window"}
-SOFT_KEYS = {"tx", "rx", "window", "periods", "cpi", "rx_spacing_mm", "angle_cal_deg"} | FILTER_KEYS
+ANGLE_KEYS = {"rx_spacing_mm", "angle_cal_deg", "rx_x_mm"}
+SOFT_KEYS = {"tx", "rx", "window", "periods", "cpi", "port"} | ANGLE_KEYS | FILTER_KEYS
 
 
 def clean(o):
@@ -65,19 +80,23 @@ def r2(a, nd=2):
 
 
 class Engine:
-    def __init__(self, emit):
-        self.emit = emit
-        self.cfg = dict(DEFAULTS)
+    def __init__(self, emit, idx=0, hub=None):
+        self.idx, self.name, self.hub = idx, BOARD_NAMES[idx], hub
+        self.emit = lambda m: emit({**m, "board": idx})
+        self.cfg = dict(DEFAULTS, **(BOARD_DEFAULTS[idx] if idx < len(BOARD_DEFAULTS) else {}))
+        self.cfg["rx_x_mm"] = list(self.cfg["rx_x_mm"])
         self.radio = None
+        self.uri = None
         self.q = queue.Queue()
         self.live = False
         self.tx_mode = None
         self.slow = None
+        self.summary = None             # latest live angle/motion result, read by Fusion
         threading.Thread(target=self._worker, daemon=True).start()
 
     # ------------------------------------------------------------ plumbing
     def log(self, msg, level="info"):
-        self.emit({"type": "log", "level": level, "msg": str(msg), "t": time.strftime("%H:%M:%S")})
+        self.emit({"type": "log", "level": level, "msg": f"[{self.name}] {msg}", "t": time.strftime("%H:%M:%S")})
 
     def submit(self, cmd):
         if cmd.get("cmd") == "live_stop":
@@ -134,28 +153,59 @@ class Engine:
         info = self.radio.info() if self.radio else None
         self.emit({"type": "status", "connected": self.radio is not None,
                    "kind": getattr(self.radio, "kind", None), "info": info, "cfg": self.cfg,
+                   "name": self.name, "uri": self.uri,
                    "range_bin_m": dsp.C / (2 * self.cfg["fs"]),
                    "range_res_m": dsp.C / (2 * self.cfg["bw_frac"] * self.cfg["fs"])})
 
     # ------------------------------------------------------------ commands
     def do_connect(self, cmd):
         self.do_disconnect({})
-        self.radio = open_radio(cmd.get("transport", "auto"), cmd.get("uri", ""),
-                                cmd.get("port", "COM5"), log=self.log)
+        # one board at a time picks its USB device, so two never take the same one
+        with self.hub.connect_lock if self.hub else threading.Lock():
+            self._connect(cmd)
         self.log(f"connected: {self.radio.info()['transport']}", "ok")
         self.do_apply({"cfg": {}})
+
+    def _connect(self, cmd):
+        transport, uri = cmd.get("transport", "auto"), cmd.get("uri", "")
+        port = cmd.get("port") or self.cfg["port"]
+        self.cfg["port"] = port
+        if transport in ("auto", "iio") and not uri:
+            # several boards share one host: take a USB board nobody else holds.
+            # A bare "usb:" or the shared 192.168.2.1 would grab an arbitrary one.
+            taken = self.hub.taken_uris(self) if self.hub else set()
+            free = [u for u in sorted(scan_usb()) if u not in taken]
+            if free:
+                uri = free[0]
+            elif taken:
+                if transport == "iio":
+                    raise IOError(f"no free USB board (in use: {', '.join(sorted(taken))})")
+                transport = "serial"
+        elif uri and self.hub and uri in self.hub.taken_uris(self):
+            raise IOError(f"{uri} is already open as another board")
+        self.radio = open_radio(transport, uri, port, log=self.log, board=self.idx)
+        self.uri = getattr(self.radio, "uri", None)
 
     def do_disconnect(self, cmd):
         self.live = False
         if self.radio:
             self.radio.close()
             self.radio = None
+            self.uri = None
             self.tx_mode = None
+        self.summary = None
         self._status()
 
     def do_apply(self, cmd):
         self._need()
-        new = cmd.get("cfg", {})
+        new = dict(cmd.get("cfg", {}))
+        # receive geometry: spacing and positions describe the same thing
+        if "rx_x_mm" in new:
+            new["rx_x_mm"] = [float(v) for v in new["rx_x_mm"]]
+            new["rx_spacing_mm"] = abs(new["rx_x_mm"][1] - new["rx_x_mm"][0])
+        elif "rx_spacing_mm" in new:
+            x1, x2 = self.cfg["rx_x_mm"]
+            new["rx_x_mm"] = [x1, x1 + math.copysign(float(new["rx_spacing_mm"]), x2 - x1)]
         gains_only = bool(new) and set(new) <= {"tx_gain", "rx_gain"} and self.tx_mode is not None
         self.cfg.update(new)
         c = self.cfg
@@ -167,7 +217,9 @@ class Engine:
             self.radio.configure(c["fs"], c["lo"], min(56e6, 0.9 * c["fs"]), c["tx_gain"], c["rx_gain"])
             self.log(f"configured fs={c['fs'] / 1e6:.2f} Msps  LO={c['lo'] / 1e9:.3f} GHz  "
                      f"chirp={c['bw_frac'] * c['fs'] / 1e6:.1f} MHz x {c['pulse_len']} samples", "ok")
-        if not new or set(new) - ({"rx_spacing_mm", "angle_cal_deg"} | FILTER_KEYS):
+        if hasattr(self.radio, "set_geometry"):
+            self.radio.set_geometry(c["rx_x_mm"])
+        if not new or set(new) - (ANGLE_KEYS | FILTER_KEYS | {"port"}):
             self.slow = None
         elif set(new) & FILTER_KEYS and hasattr(self, "mhist"):
             self.mhist.clear()
@@ -259,6 +311,7 @@ class Engine:
 
     def do_live_stop(self, cmd):
         self.live = False
+        self.summary = None
         if self.radio:                      # do not leave the transmitter radiating
             self.radio.stop_tx()
             self.tx_mode = None
@@ -293,6 +346,7 @@ class Engine:
             self.mhist = collections.deque(maxlen=300)
             self.moving = False
             self.xs_avg = None
+            self.fhist = collections.deque(maxlen=600)
         st = self.slow[jsel]
         fps = st.frame_rate()
         for s in self.slow:                 # background adapts over ~3 s whatever the frame rate
@@ -402,16 +456,270 @@ class Engine:
             }
             msg["ang_dopp"] = r2(np.where(strong, to_deg(wrap(np.angle(s12) - cal)), np.nan), 1)
             msg["ph_dopp"] = r2(np.where(strong, np.degrees(wrap(np.angle(s12) - cal)), np.nan), 1)
+        self._summarise(msg, t, lam, near)
         self.emit(msg)
 
+    def _summarise(self, msg, t, lam, near):
+        """Angle and motion for the Fusion stage.
+
+        Besides the Doppler-domain angle above (which averages over the whole
+        Doppler window, seconds long) a "fast" angle is computed for tracking a
+        hand wave: the frame difference d = p(t) - p(t - ~30 ms) of each
+        receiver's near bins. Static scene and leakage cancel in the difference;
+        a moving scatterer leaves d_j ~ a.exp(j.psi_j).(1 - exp(-j.dpsi)) with
+        the same radial phase step dpsi on both receivers, so arg(d1.conj(d2))
+        is the inter-receiver phase psi1 - psi2. Summed over ~0.15 s of frames."""
+        c = self.cfg
+        s1, s2 = self.slow
+        fps = s1.frame_rate()
+        k = max(1, int(round(0.03 * fps)))
+        m = max(3, int(round(0.15 * fps)))
+        fast = None
+        if s1.filled >= k + m + 1:
+            d1 = s1.buf[-m:, near] - s1.buf[-m - k:-k, near]
+            d2 = s2.buf[-m:, near] - s2.buf[-m - k:-k, near]
+            S = np.sum(d1 * np.conj(d2))
+            p1, p2 = float(np.sum(np.abs(d1) ** 2)), float(np.sum(np.abs(d2) ** 2))
+            self.fhist.append(p1 + p2 + 1e-30)
+            # leakage jitter also survives the difference, coherently on both
+            # receivers (shared LO), so gate on power over its learned quiet level
+            lvl = (float(10 * np.log10((p1 + p2 + 1e-30) / np.percentile(self.fhist, 5)))
+                   if len(self.fhist) >= 30 else 0.0)
+            self.raw_dphi_fast = float(np.angle(S))
+            coh = float(np.abs(S) / (np.sqrt(p1 * p2) + 1e-30))
+            fast = {"raw": self.raw_dphi_fast, "coh": coh, "lvl_db": lvl, "valid": bool(coh > 0.5 and lvl > 6)}
+        A = msg.get("angle")
+        dop = None
+        if A:
+            dop = {"raw": self.raw_dphi, "coh": A["coh"],
+                   "valid": bool(A["coh"] > 0.5 and A["n_bins"] >= 2 and msg["motion_db"] > 6)}
+        self.summary = {"t": t, "fps": fps, "motion_db": msg["motion_db"], "lam": lam, "lo": c["lo"],
+                        "rx_x_mm": list(c["rx_x_mm"]), "cal": math.radians(float(c["angle_cal_deg"])),
+                        "fast": fast, "doppler": dop, "vel": msg["det"]["vel"] if msg.get("det") else None}
+
     def do_angle_cal(self, cmd):
-        """Take the direction of whatever is moving right now as 0 degrees."""
+        """Take the direction of whatever is moving right now as 0 degrees, or,
+        with `expected_deg`, as the inter-receiver phase that a mover at a known
+        position should give (two-board calibration)."""
         if cmd.get("clear"):
             self.cfg["angle_cal_deg"] = 0.0
         else:
-            self.cfg["angle_cal_deg"] = float(np.degrees(getattr(self, "raw_dphi", 0.0)))
+            raw = getattr(self, "raw_dphi_fast" if cmd.get("estimator") == "fast" else "raw_dphi", 0.0)
+            exp = math.radians(float(cmd.get("expected_deg", 0.0)))
+            self.cfg["angle_cal_deg"] = float(np.degrees(np.angle(np.exp(1j * (raw - exp)))))
         self.log(f"angle reference: inter-receiver phase offset {self.cfg['angle_cal_deg']:.1f} deg", "ok")
         self._status()
+
+
+# =================================================================== fusion
+class Strokes:
+    """Splits an angle trace into swipes: a stroke ends where the angle turns
+    back by more than `hyst` degrees, or where the trace drops out."""
+
+    def __init__(self, hyst=8.0):
+        self.hyst = hyst
+        self.done = collections.deque(maxlen=50)
+        self.reset()
+
+    def reset(self):
+        self.dir, self.lo, self.hi, self.anchor, self.ext, self.last_t = 0, None, None, None, None, 0.0
+
+    def _close(self, t):
+        if self.dir and abs(self.ext - self.anchor) > self.hyst:
+            self.done.append({"t": t, "dir": self.dir, "from": self.anchor, "to": self.ext})
+
+    def push(self, t, a):
+        if a is None:
+            if self.last_t and t - self.last_t > 0.4:
+                self._close(self.last_t)
+                self.reset()
+            return
+        self.last_t = t
+        if self.dir == 0:
+            self.lo = a if self.lo is None else min(self.lo, a)
+            self.hi = a if self.hi is None else max(self.hi, a)
+            if self.hi - self.lo > self.hyst:
+                self.dir = 1 if a == self.hi else -1
+                self.anchor, self.ext = (self.lo, a) if self.dir > 0 else (self.hi, a)
+        elif (a - self.ext) * self.dir > 0:
+            self.ext = a
+        elif (self.ext - a) * self.dir > self.hyst:
+            self._close(t)
+            self.anchor, self.ext, self.dir = self.ext, a, -self.dir
+
+    def report(self, now):
+        recent = [s for s in self.done if now - s["t"] < 3.0]
+        last = self.done[-1] if self.done else None
+        return {"n_recent": len(recent), "waving": len(recent) >= 2, "rate_hz": len(recent) / 6.0,
+                "last": None if last is None else {**last, "ago": now - last["t"], "span": abs(last["to"] - last["from"])}}
+
+
+def model_dphi(xg, zg, rx_x_mm, lam):
+    """Inter-receiver phase psi1 - psi2 that a point scatterer at (x, z) gives:
+    the common TX leg cancels, each receive leg adds -2.pi.r/lambda."""
+    r1 = np.hypot(xg - rx_x_mm[0] * 1e-3, zg)
+    r2 = np.hypot(xg - rx_x_mm[1] * 1e-3, zg)
+    return -2 * np.pi * (r1 - r2) / lam
+
+
+class Fusion:
+    """Combines the boards' live angle estimates.
+
+    The boards have independent clocks and LOs, so their signals cannot be
+    compared in phase with each other; each board's own two receivers can.
+    Every board therefore gives its own inter-receiver phase, which puts the
+    hand on a hyperbola-like curve around that board's receive pair. Pairs at
+    different places along the array see a nearby hand under different
+    angles, so their curves cross where the hand is: a coarse position, a few
+    cm laterally and much worse in range."""
+
+    XS = np.linspace(-0.40, 0.40, 81)
+    ZS = np.linspace(0.05, 1.00, 60)
+
+    def __init__(self, hub, emit):
+        self.hub, self.emit = hub, emit
+        self.on = False
+        self.estimator = "fast"
+        self.t0 = time.time()
+        self.strokes = Strokes()
+        self.L = None
+        self.xg, self.zg = np.meshgrid(self.XS, self.ZS)
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            time.sleep(1 / 15)
+            if self.on:
+                try:
+                    self._step()
+                except Exception:
+                    traceback.print_exc()
+
+    def _step(self):
+        now = time.time()
+        wrap = lambda a: float(np.angle(np.exp(1j * a)))
+        boards, use = [], []
+        for e in self.hub.engines:
+            s = e.summary
+            if not (e.live and s and now - s["t"] < 0.6):
+                boards.append(None)
+                continue
+            x1, x2 = s["rx_x_mm"]
+            d = abs(x2 - x1) * 1e-3
+            est = s[self.estimator] or {}
+            b = {"motion_db": s["motion_db"], "fps": s["fps"], "lo": s["lo"], "vel": s["vel"],
+                 "move_db": s["fast"]["lvl_db"] if s["fast"] else None,
+                 "valid": bool(est.get("valid")), "coh": est.get("coh"), "deg": None, "phi": None}
+            if "raw" in est:
+                dphi = wrap(est["raw"] - s["cal"])
+                th = math.degrees(math.asin(max(-1.0, min(1.0, dphi * s["lam"] / (2 * math.pi * d)))))
+                # a board's angle is + towards its RX1; the array angle is + towards +x
+                b.update(dphi_deg=math.degrees(dphi), deg=th, phi=th if x1 > x2 else -th,
+                         amb_deg=math.degrees(math.asin(min(1.0, s["lam"] / (2 * d)))))
+                if b["valid"]:
+                    use.append((dphi, est["coh"], s))
+            boards.append(b)
+        live = [b for b in boards if b]
+        val = [b for b in live if b["valid"]]
+        msg = {"type": "fused", "t": now - self.t0, "boards": boards, "estimator": self.estimator,
+               "motion_db": max((b["motion_db"] for b in live), default=None),
+               "move_db": max((b["move_db"] for b in live if b["move_db"] is not None), default=None),
+               "angle": sum(b["phi"] * b["coh"] for b in val) / sum(b["coh"] for b in val) if val else None,
+               "x": r2(self.XS * 1e3, 0), "z": r2(self.ZS * 1e3, 0), "pos": None}
+
+        # position: every valid board scores each (x, z) by how well the phase it
+        # would produce there matches the measured one, weighted by coherence
+        if use:
+            cost = np.zeros_like(self.xg)
+            for dphi, coh, s in use:
+                cost += coh * (1 - np.cos(dphi - model_dphi(self.xg, self.zg, s["rx_x_mm"], s["lam"])))
+            L = np.exp(-cost / 0.1)                 # 0.1 ~ 1 - cos(25 deg) of phase noise
+            self.L = L if self.L is None else 0.6 * self.L + 0.4 * L
+        elif self.L is not None:
+            self.L = None if self.L.max() < 1e-3 else self.L * 0.8
+        if self.L is not None:
+            Ln = self.L / (self.L.max() + 1e-30)
+            msg["map_db"] = r2(10 * np.log10(Ln + 1e-3), 1)
+            if len(use) >= 2:
+                iz, ix = np.unravel_index(int(np.argmax(Ln)), Ln.shape)
+                inside = Ln > 0.5                   # -3 dB region: a rough uncertainty
+                msg["pos"] = {"x_mm": float(self.XS[ix] * 1e3), "z_mm": float(self.ZS[iz] * 1e3),
+                              "dx_mm": float(np.ptp(self.xg[inside]) * 500),
+                              "dz_mm": float(np.ptp(self.zg[inside]) * 500),
+                              "deg": float(np.degrees(np.arctan2(self.XS[ix], self.ZS[iz])))}
+        self.strokes.push(now, msg["angle"])
+        msg["strokes"] = self.strokes.report(now)
+
+        warn = []
+        if len(live) < len(self.hub.engines):
+            warn.append("not every board is running live")
+        lo = [(e.cfg["lo"], e.cfg["bw_frac"] * e.cfg["fs"]) for e in self.hub.engines if e.radio]
+        if len(lo) >= 2 and abs(lo[0][0] - lo[1][0]) < max(lo[0][1], lo[1][1]):
+            warn.append("the two boards' chirps overlap in frequency, so each hears the other's pulses: "
+                        "set their LOs at least one chirp bandwidth apart")
+        msg["warn"] = warn
+        self.emit(msg)
+
+
+# ====================================================================== hub
+class Hub:
+    """Owns the per-board engines and the fusion stage; routes browser commands.
+    A command with a "board" index goes to that board's engine."""
+
+    def __init__(self, emit, n_boards=2):
+        self.emit = emit
+        self.connect_lock = threading.Lock()
+        self.engines = [Engine(emit, k, self) for k in range(n_boards)]
+        self.fusion = Fusion(self, emit)
+
+    def taken_uris(self, me):
+        return {e.uri for e in self.engines if e is not me and e.uri}
+
+    def _fusion_state(self):
+        self.emit({"type": "fusion", "on": self.fusion.on, "estimator": self.fusion.estimator})
+
+    def submit(self, cmd):
+        if "board" in cmd:
+            k = int(cmd["board"])
+            if 0 <= k < len(self.engines):
+                self.engines[k].submit(cmd)
+            return
+        name = cmd.get("cmd")
+        if name == "hello":
+            for e in self.engines:
+                e.submit({"cmd": "hello"})
+            self._fusion_state()
+        elif name == "scan":
+            threading.Thread(target=lambda: self.emit({"type": "scan", "uris": scan_usb(),
+                                                       "taken": {e.name: e.uri for e in self.engines}}),
+                             daemon=True).start()
+        elif name == "fused_start":
+            self.fusion.strokes = Strokes()
+            self.fusion.L = None
+            self.fusion.on = True
+            for e in self.engines:
+                if e.radio:
+                    e.submit({"cmd": "live_start"})
+            self._fusion_state()
+        elif name in ("fused_stop", "stop_all"):
+            self.fusion.on = False
+            for e in self.engines:
+                e.submit({"cmd": "live_stop"})
+            self._fusion_state()
+        elif name == "fused_cfg":
+            if cmd.get("estimator") in ("fast", "doppler"):
+                self.fusion.estimator = cmd["estimator"]
+            self._fusion_state()
+        elif name == "fused_cal":
+            # something moving at a known (x, z): set each board's reference so
+            # that it reports the phase that position should give
+            x, z = float(cmd.get("x_mm", 0)) * 1e-3, float(cmd.get("z_mm", 300)) * 1e-3
+            for e in self.engines:
+                if cmd.get("clear"):
+                    e.submit({"cmd": "angle_cal", "clear": True})
+                    continue
+                exp = math.degrees(float(model_dphi(x, z, e.cfg["rx_x_mm"], dsp.C / e.cfg["lo"])))
+                e.submit({"cmd": "angle_cal", "expected_deg": exp, "estimator": self.fusion.estimator})
 
 
 # ====================================================================== web
@@ -423,15 +731,15 @@ class WS(tornado.websocket.WebSocketHandler):
 
     def open(self):
         WS.clients.add(self)
-        ENGINE.q.put({"cmd": "hello"})
+        HUB.submit({"cmd": "hello"})
 
     def on_close(self):
         WS.clients.discard(self)
         if not WS.clients:
-            ENGINE.submit({"cmd": "live_stop"})
+            HUB.submit({"cmd": "stop_all"})
 
     def on_message(self, message):
-        ENGINE.submit(json.loads(message))
+        HUB.submit(json.loads(message))
 
 
 def broadcast(msg):
@@ -454,17 +762,21 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--transport", default="")
+    ap.add_argument("--boards", type=int, default=2)
     a = ap.parse_args()
     loop = tornado.ioloop.IOLoop.current()
-    ENGINE = Engine(lambda m: loop.add_callback(broadcast, m))
-    ENGINE.do_hello = lambda cmd: ENGINE._status()
+    HUB = Hub(lambda m: loop.add_callback(broadcast, m), a.boards)
+    for e in HUB.engines:
+        e.do_hello = lambda cmd, e=e: e._status()
     app = tornado.web.Application([(r"/", Index), (r"/ws", WS)], template_path=HERE, autoreload=False)
     app.listen(a.port, address="127.0.0.1")
     print(f"pulse radar GUI: http://localhost:{a.port}")
     if a.transport:
-        ENGINE.submit({"cmd": "connect", "transport": a.transport})
+        for e in HUB.engines:
+            e.submit({"cmd": "connect", "transport": a.transport})
     try:
         loop.start()
     finally:
-        if ENGINE.radio:
-            ENGINE.radio.close()
+        for e in HUB.engines:
+            if e.radio:
+                e.radio.close()

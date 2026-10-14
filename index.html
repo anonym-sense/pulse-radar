@@ -49,12 +49,17 @@ th{color:var(--muted);font-weight:500}th:first-child,td:first-child{text-align:l
 .note{border-left:3px solid var(--warn);padding:6px 10px;background:#fab21912;color:var(--ink2);margin:8px 0}
 .hide{display:none}
 summary{cursor:pointer}
+#tabs{display:flex;gap:6px;flex-wrap:wrap}
+#tabs button{display:inline-flex;align-items:center}
+#tabs button.on{border-color:var(--s1);background:#1c5cab40}
+#tabs .good .dot,#tabs button.good .dot{background:var(--good)}#tabs button.warn .dot{background:var(--warn)}
 .help{color:var(--ink2);max-width:105ch}.help h4{color:var(--ink);margin:14px 0 4px;font-size:13px}.help p,.help ul{margin:4px 0}.help code{background:#262625;padding:1px 5px;border-radius:4px;color:var(--ink)}
 </style>
 </head>
 <body>
 <header>
   <h1>Pulse Radar Bring-up · 5.8 GHz · 2T2R</h1>
+  <nav id="tabs"><button data-tab="0" onclick="selectTab(0)"><span class="dot"></span>Board A</button><button data-tab="1" onclick="selectTab(1)"><span class="dot"></span>Board B</button><button data-tab="f" onclick="selectTab('f')"><span class="dot"></span>Both boards · hand angle</button></nav>
   <span id="conn" class="pill"><span class="dot"></span><span id="connTxt">not connected</span></span>
   <span id="busy" class="pill hide">working…</span>
   <span id="sum" class="pill"></span>
@@ -109,18 +114,30 @@ summary{cursor:pointer}
 <h4>12 · Angle from the two receivers</h4>
 <p>For each Doppler bin the <b>cross-spectrum</b> S₁₂ = Σ X₁ · conj(X₂) is summed over the near delay bins. Working in the Doppler domain means only moving reflectors contribute; the static scene and the leakage are excluded. S₁₂ is averaged over a few looks (≈ 0.3 s) and only Doppler bins standing at least 6 dB above the median are used, so empty bins do not dilute the estimate. The phase of the summed S₁₂ is the inter-receiver phase difference Δφ, and <code>θ = asin( (Δφ − offset) · λ / (2π · d) )</code>, with d the receive-antenna spacing. <b>Coherence</b> = |ΣS₁₂| / √(ΣP₁ · ΣP₂): near 1 means one dominant direction; low means several movers or multipath, and the angle should not be trusted.</p>
 <p>Limits: (a) the two receive chains have an unknown fixed phase offset, so move straight in front of the antennas and press <b>Set current direction as 0°</b>; (b) at 2-inch spacing d ≈ 0.98 λ, so angles are unambiguous only within about ±31° and wrap beyond that; (c) two receivers resolve one angle, in the plane containing both antennas, for one dominant mover; (d) the sign convention (+ = towards RX1) should be checked once by moving to a known side.</p>
+<h4>13 · Two boards</h4>
+<p>Each board has its own tab with the full bring-up (sections 0–3) and its own worker thread, so the boards can be tested one at a time or both at once. They are told apart by their USB address (<code>usb:bus.device.interface</code>): both answer on 192.168.2.1 and may report the same serial number.</p>
+<p><b>Frequencies.</b> In the combined view both boards transmit at once. A board that hears the other’s chirp sees it at the wrong time and frequency, which looks like noise or false motion. The defaults put the LOs 70 MHz apart (5.765 and 5.835 GHz). That is wider than either 49 MHz chirp and inside the 5.725–5.875 GHz band. Angle uses each board’s own wavelength.</p>
+<p><b>Why no phase between boards.</b> The two AD9361s have separate crystals, so their LOs differ by up to tens of kHz and drift. Within a board, transmitter and receivers share one LO and that offset cancels. Between boards it does not, so phase is only ever compared between the two receivers of one board.</p>
+<p><b>Fast angle.</b> The Doppler-domain angle (section 12) averages over the whole Doppler window, which is seconds long, and smears a hand wave. For tracking, each board also forms the frame difference <code>d = p(t) − p(t − 30 ms)</code> of its near delay bins. The static scene and the leakage cancel; a moving hand leaves the same radial phase step on both receivers, so <code>arg Σ d₁·conj(d₂)</code> over the last ≈0.15 s is the inter-receiver phase. Leakage jitter also survives the difference, coherently on both receivers, so the estimate is only used when the difference power is 6 dB above its own learned quiet level and the coherence is above 0.5.</p>
+<p><b>Position.</b> A point at (x, z) gives each board the phase <code>Δφ = −2π (|p − r₁| − |p − r₂|) / λ</code>, with r₁, r₂ that board’s receive antennas. Every grid point is scored by Σ coherence · (1 − cos(Δφ_measured − Δφ_model)) over the boards whose estimate is valid. The map shows exp(−score / 0.1), averaged over a few updates and normalised. One board alone gives a curved ridge (a direction only). Two boards give a crossing. The pairs are only ≈10 cm apart, so this works only close in: at 30 cm the two pairs see the hand about 19° apart, and a few degrees of phase noise already moves the range estimate by a fifth. Lateral position is much better determined than range. Each pair keeps its own ±31° wrap, so a ghost crossing can win.</p>
+<p><b>Calibration.</b> Each board has its own fixed inter-receiver phase offset. Put a hand at a known point (default 30 cm straight in front of the array centre), keep it wiggling slightly so it is seen as moving, and press <b>Calibrate</b>. Each board’s offset is then set so that it reports the phase that point should give. A plain “0°” reference would be wrong here, because a hand in front of the centre is <i>not</i> at 0° for either pair.</p>
+<p><b>Geometry and sign.</b> Positions are along the antenna line, + towards board B by default (A: −75.8, −25.0; B: +25.0, +75.8 mm). That assumes the two 2″ pairs are on one line with a 50 mm gap between the inner antennas, both facing the same way. If a board is mounted turned round, or the hand moves right and that board’s angle goes left, swap its RX1 and RX2 positions. The array angle is + towards +x.</p>
+<p><b>Strokes.</b> The combined angle is split into swipes: a stroke ends where the angle turns back by more than 8°, or where it drops out for 0.4 s. Two or more strokes within 3 s count as waving.</p>
 </div>
 </details>
 </section>
 
-<section>
-  <h2>0 · Radio</h2>
-  <p class="sub">Connect, then set the waveform. “Auto” uses the fast libiio link if the board’s data port is reachable and otherwise falls back to the slow debug-serial path.</p>
+<section class="bv">
+  <h2>0 · Radio · <span id="bname">Board A</span></h2>
+  <p class="sub">Connect, then set the waveform. “Auto” uses the fast libiio link if the board’s data port is reachable and otherwise falls back to the slow debug-serial path. With two boards on this computer, leave the URI empty to take whichever USB board the other tab is not using, or press <b>Scan USB</b> and pick one. Both boards answer on the same 192.168.2.1 address and report the same serial number, so only the USB address tells them apart.</p>
   <div class="row">
     <label>Link <select id="transport"><option value="auto">auto</option><option value="iio">libiio (live)</option><option value="serial">debug serial (slow)</option><option value="sim">simulator</option></select></label>
-    <label>URI <input id="uri" placeholder="ip:192.168.2.1" style="width:150px"></label>
-    <button class="primary" onclick="send({cmd:'connect',transport:$('transport').value,uri:$('uri').value})">Connect</button>
-    <button onclick="send({cmd:'disconnect'})">Disconnect</button>
+    <label>URI <input id="uri" list="uris" placeholder="empty = a free USB board" style="width:170px"></label><datalist id="uris"></datalist>
+    <button onclick="send({cmd:'scan'})">Scan USB</button>
+    <label>Serial port <input id="port" style="width:70px"></label>
+    <button class="primary" onclick="sendB({cmd:'connect',transport:$('transport').value,uri:$('uri').value,port:$('port').value})">Connect</button>
+    <button onclick="sendB({cmd:'disconnect'})">Disconnect</button>
+    <span id="scanInfo" class="sub" style="margin:0"></span>
   </div>
   <div class="row" style="margin-top:10px">
     <label>Sample rate <select id="fs"><option value="61440000">61.44 Msps</option><option value="56000000">56 Msps</option><option value="40000000">40 Msps</option><option value="30720000">30.72 Msps</option><option value="20000000">20 Msps</option></select></label>
@@ -140,23 +157,23 @@ summary{cursor:pointer}
   </div>
 </section>
 
-<section>
+<section class="bv">
   <h2>1 · Are the samples reaching the transmitter? (digital loopback)</h2>
   <p class="sub">Loops the DAC-port samples straight back into the ADC port inside the AD9361, with no RF involved. The received pulse must equal the sent one to the bit.</p>
-  <div class="row"><button class="primary" onclick="send({cmd:'step_digital'})">Run digital loopback</button><span id="digVerdict"></span></div>
+  <div class="row"><button class="primary" onclick="sendB({cmd:'step_digital'})">Run digital loopback</button><span id="digVerdict"></span></div>
   <div class="grid" id="digCharts" style="margin-top:10px"></div>
 </section>
 
-<section>
+<section class="bv">
   <h2>2 · Are the pulses going out and coming back? (over the air)</h2>
   <p class="sub">Each transmitter fires alone; both receivers listen. With antennas 2″ apart the direct antenna-to-antenna leakage is the reference signal: its envelope, spectrum and compressed shape show transmit and receive quality.</p>
-  <div class="row"><button class="primary" onclick="send({cmd:'step_ota'})">Run over-the-air test</button>
+  <div class="row"><button class="primary" onclick="sendB({cmd:'step_ota'})">Run over-the-air test</button>
     <button onclick="autoGain()" id="agBtn" disabled>Set RX gains for −12 dBFS</button><span id="otaVerdict"></span></div>
   <div id="otaTable" style="margin-top:10px;overflow:auto"></div>
   <div class="grid" id="otaCharts" style="margin-top:10px"></div>
 </section>
 
-<section>
+<section class="bv">
   <h2>3 · Live: pulse quality, delay–Doppler, motion</h2>
   <p class="sub">Continuous pulse train on one transmitter. Each capture is compressed to a range profile anchored on the direct path; static returns are subtracted, and what remains is tracked over slow time.</p>
   <div class="row">
@@ -164,12 +181,12 @@ summary{cursor:pointer}
     <label>TX <select id="tx" onchange="pathCfg()"><option value="0">TX1</option><option value="1">TX2</option></select></label>
     <label>RX <select id="rx" onchange="pathCfg()"><option value="0">RX1</option><option value="1" selected>RX2</option></select></label>
     <label>Frames per Doppler window <select id="cpi" onchange="pathCfg()"><option>64</option><option selected>128</option><option>256</option></select></label>
-    <button onclick="send({cmd:'reset_bg'});hist.length=0;wf.length=0">Reset background</button>
+    <button onclick="sendB({cmd:'reset_bg'});cb().hist.length=0;cb().wf.length=0">Reset background</button>
   </div>
   <div class="row" style="margin-top:8px">
     <label>RX1–RX2 spacing mm <input id="dspace" type="number" step="0.1" min="5" value="50.8" onchange="softCfg()"></label>
-    <button onclick="send({cmd:'angle_cal'})">Set current direction as 0°</button>
-    <button onclick="send({cmd:'angle_cal',clear:true})">Clear angle reference</button>
+    <button onclick="sendB({cmd:'angle_cal'})">Set current direction as 0°</button>
+    <button onclick="sendB({cmd:'angle_cal',clear:true})">Clear angle reference</button>
   </div>
   <div class="row" style="margin-top:8px">
     <b style="font-weight:600">Slow-time filters</b>
@@ -203,6 +220,55 @@ summary{cursor:pointer}
   </div>
 </section>
 
+<section id="fv" class="hide">
+  <h2>Both boards · motion and hand angle</h2>
+  <p class="sub">Both boards run their own radar at the same time, each with its own transmitter and its two receivers. The boards have separate clocks, so their signals cannot be compared with each other in phase. Each board measures the angle of the moving hand between its own two receivers instead. The two receive pairs sit at different places along the array, so a hand close by is seen under two slightly different angles, and where the two lines of sight cross is where the hand is.</p>
+  <div class="row">
+    <label>Link <select id="fTransport"><option value="auto">auto</option><option value="iio">libiio (live)</option><option value="sim">simulator</option></select></label>
+    <button class="primary" onclick="connectBoth()">Connect both</button>
+    <button onclick="eachBoard(k=>send({cmd:'disconnect',board:k}))">Disconnect both</button>
+    <button class="primary" id="fBtn" onclick="send({cmd:fusion.on?'fused_stop':'fused_start'})">Start both</button>
+    <button onclick="resetBoth()">Reset backgrounds</button>
+    <span id="fConn" class="sub" style="margin:0"></span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <b style="font-weight:600">Array geometry</b>
+    <span class="sub" style="margin:0">position of each receive antenna along the antenna line, mm</span>
+    <label>A · RX1 <input id="gA1" type="number" step="0.1"></label>
+    <label>A · RX2 <input id="gA2" type="number" step="0.1"></label>
+    <label>B · RX1 <input id="gB1" type="number" step="0.1"></label>
+    <label>B · RX2 <input id="gB2" type="number" step="0.1"></label>
+    <button onclick="applyGeom()">Apply</button>
+    <button onclick="defaultGeom()">Default: 2″ pairs, 50 mm gap</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <b style="font-weight:600">Frequencies</b>
+    <label>A · LO GHz <input id="fLoA" type="number" step="0.005"></label>
+    <label>B · LO GHz <input id="fLoB" type="number" step="0.005"></label>
+    <button onclick="applyLo()">Apply</button>
+    <span class="sub" style="margin:0">at least one chirp bandwidth apart, so neither board hears the other’s pulses</span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <b style="font-weight:600">Angle</b>
+    <label>Estimator <select id="fEst" onchange="send({cmd:'fused_cfg',estimator:this.value})"><option value="fast">fast: frame difference, ≈0.15 s</option><option value="doppler">Doppler: whole Doppler window</option></select></label>
+    <label>Calibration point x <input id="calX" type="number" value="0"> mm</label>
+    <label>z <input id="calZ" type="number" value="300"> mm</label>
+    <button onclick="send({cmd:'fused_cal',x_mm:+$('calX').value,z_mm:+$('calZ').value})">Calibrate: hand wiggling at this point</button>
+    <button onclick="send({cmd:'fused_cal',clear:true})">Clear calibration</button>
+  </div>
+  <div id="fWarn" class="note hide"></div>
+  <div class="tiles" id="fTiles" style="margin-top:12px"></div>
+  <div class="grid">
+    <div class="chart" id="cFAng"></div>
+    <div class="chart" id="cFPos"></div>
+    <div class="chart" id="cFXZ"></div>
+    <div class="chart" id="cFMot"></div>
+    <div class="chart" id="cFWf0"></div>
+    <div class="chart" id="cFWf1"></div>
+    <div class="chart" id="cFCoh"></div>
+  </div>
+</section>
+
 <section><h2>Log</h2><div id="log"></div></section>
 </main>
 
@@ -211,18 +277,25 @@ const $=id=>document.getElementById(id);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const COL=[css('--s1'),css('--s2'),css('--s3'),css('--s4')];
 const fmt=(v,d=1)=>v==null||!isFinite(v)?'–':(+v).toFixed(d);
-let ws,state={connected:false,kind:null,cfg:{}},live=false,lastOta=null;
-const hist=[],wf=[];
+const NAMES='AB';
+const B=[0,1].map(()=>({state:{connected:false,kind:null,cfg:{}},live:false,busy:false,lastDig:null,lastOta:null,lastFrame:null,hist:[],wf:[]}));
+let ws,sel=0,fusion={on:false,estimator:'fast'},lastFused=null;
+const fh=[];
+const cb=()=>B[sel==='f'?0:sel];
+const eachBoard=f=>B.forEach((_,k)=>f(k));
 
 function connectWS(){
   ws=new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage=e=>handle(JSON.parse(e.data));
-  // ?auto=sim|serial|iio|auto runs every step unattended
+  // ?auto=sim|serial|iio|auto connects both boards, runs both bring-up steps on each, then the combined view
   const auto=new URLSearchParams(location.search).get('auto');
-  ws.onopen=()=>{if(auto&&!connectWS.done){connectWS.done=1;send({cmd:'connect',transport:auto});send({cmd:'step_digital'});send({cmd:'step_ota'});send({cmd:'live_start'})}};
+  ws.onopen=()=>{if(auto&&!connectWS.done){connectWS.done=1;
+    eachBoard(k=>{send({cmd:'connect',transport:auto,board:k});send({cmd:'step_digital',board:k});send({cmd:'step_ota',board:k})});
+    send({cmd:'fused_start'});selectTab('f')}};
   ws.onclose=()=>{setConn(false,'server offline');setTimeout(connectWS,1500)};
 }
 function send(o){if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
+function sendB(o){send({...o,board:sel==='f'?0:sel})}
 function setConn(ok,txt,cls){$('conn').className='pill '+(ok?(cls||'good'):'');$('connTxt').textContent=txt}
 
 // ---------------------------------------------------------------- charts
@@ -315,37 +388,73 @@ function tile(k,v,n,cls){return `<div class="tile"><div class="k">${k}</div><div
 
 // ---------------------------------------------------------------- messages
 function handle(m){
+  const bo=m.board!=null?B[m.board]:null,shown=m.board!=null&&m.board===sel;
   if(m.type==='log'){const d=document.createElement('div');d.className=m.level;d.textContent=`${m.t}  ${m.msg}`;$('log').prepend(d)}
-  else if(m.type==='busy'){$('busy').classList.toggle('hide',!m.on);$('busy').textContent='working… '+(m.what||'')}
-  else if(m.type==='status')onStatus(m);
-  else if(m.type==='digital')onDigital(m);
-  else if(m.type==='ota')onOta(m);
-  else if(m.type==='live'){live=m.on;$('liveBtn').textContent=live?'Stop live':'Start live'}
-  else if(m.type==='frame')onFrame(m);
+  else if(m.type==='busy'){bo.busy=m.on?(m.what||'…'):false;showBusy()}
+  else if(m.type==='status'){bo.state=m;tabDots();fillCombined();if(shown)onStatus(bo);if(sel==='f')combinedHeader()}
+  else if(m.type==='digital'){bo.lastDig=m;if(shown)onDigital(m)}
+  else if(m.type==='ota'){bo.lastOta=m;if(shown)onOta(bo)}
+  else if(m.type==='live'){bo.live=m.on;tabDots();if(shown)$('liveBtn').textContent=bo.live?'Stop live':'Start live'}
+  else if(m.type==='frame'){ingest(bo,m);if(shown)onFrame(bo,m)}
+  else if(m.type==='scan')onScan(m);
+  else if(m.type==='fusion'){fusion=m;$('fBtn').textContent=m.on?'Stop both':'Start both';$('fEst').value=m.estimator;tabDots()}
+  else if(m.type==='fused'){ingestFused(m);if(sel==='f')onFused(m)}
 }
-function onStatus(m){
-  state=m;
-  if(!m.connected){setConn(false,'not connected');$('info').textContent='';$('sum').textContent='';return}
+function showBusy(){const w=B.map((b,k)=>b.busy?`${NAMES[k]}: ${b.busy}`:null).filter(Boolean);
+  $('busy').classList.toggle('hide',!w.length);$('busy').textContent='working… '+w.join(' · ')}
+function tabDots(){
+  document.querySelectorAll('#tabs button').forEach(b=>{const t=b.dataset.tab;let cls='';
+    if(t==='f')cls=fusion.on?'good':B.every(x=>x.state.connected)?'warn':'';
+    else{const x=B[+t];cls=x.state.connected?(x.live?'good':'warn'):''}
+    b.className=(String(sel)===t?'on ':'')+cls})}
+function selectTab(k){
+  sel=k;tabDots();
+  document.querySelectorAll('.bv').forEach(e=>e.classList.toggle('hide',k==='f'));
+  $('fv').classList.toggle('hide',k!=='f');
+  if(k==='f'){combinedHeader();fillCombined(true);clearCharts(['cFAng','cFPos','cFXZ','cFMot','cFWf0','cFWf1','cFCoh']);if(lastFused)onFused(lastFused)}
+  else{
+    const bo=B[k];$('bname').textContent='Board '+NAMES[k];
+    $('uri').value=bo.state.uri||'';onStatus(bo);
+    if(bo.lastDig)onDigital(bo.lastDig);else{$('digVerdict').innerHTML='';$('digCharts').innerHTML=''}
+    if(bo.lastOta)onOta(bo);else{$('otaVerdict').innerHTML='';$('otaTable').innerHTML='';$('otaCharts').innerHTML='';$('agBtn').disabled=true}
+    $('liveBtn').textContent=bo.live?'Stop live':'Start live';
+    $('tiles').innerHTML='';clearCharts(['cProf','cMti','cRD','cWf','cDisp','cMot','cAng','cPh','cAngD','cCoh']);
+    if(bo.lastFrame)onFrame(bo,bo.lastFrame);
+  }
+  try{localStorage.setItem('tab',String(k))}catch(e){}
+  redrawAll();
+}
+function clearCharts(ids){ids.forEach(id=>{const e=$(id);e.innerHTML='';e._c=null;e._hover=null;e._redraw=null})}
+function onScan(m){
+  const taken=Object.entries(m.taken).filter(([,u])=>u).map(([n,u])=>`${u} = board ${n}`);
+  $('uris').innerHTML=Object.keys(m.uris).map(u=>`<option value="${u}">`).join('');
+  $('scanInfo').textContent=Object.keys(m.uris).length?`USB boards: ${Object.keys(m.uris).join(', ')}`+(taken.length?` · in use: ${taken.join(', ')}`:''):'no USB boards found';
+}
+function onStatus(bo){
+  const m=bo.state;
+  if(!m.connected){setConn(false,`board ${NAMES[sel]} · not connected`);$('info').textContent='';$('sum').textContent='';
+    if(m.cfg&&m.cfg.port)$('port').value=m.cfg.port;return}
   const i=m.info,slow=m.kind==='serial',sim=m.kind==='sim';
-  setConn(true,i.transport,slow||sim?'warn':'good');
+  setConn(true,`board ${m.name} · ${i.transport}`,slow||sim?'warn':'good');
   $('sum').textContent=`${(i.fs/1e6).toFixed(2)} Msps · LO ${(i.rx_lo/1e9).toFixed(3)} GHz · range bin ${m.range_bin_m.toFixed(2)} m · resolution ${m.range_res_m.toFixed(2)} m`;
   $('info').textContent=`${i.model} · ${i.chip} · ${i.fw}` + (i.temp_c?` · ${fmt(i.temp_c,0)} °C`:'');
-  const c=m.cfg;$('fs').value=c.fs;$('lo').value=c.lo/1e9;$('bw').value=c.bw_frac;$('plen').value=c.pulse_len;$('period').value=c.period;$('window').value=c.window;
+  if(m.uri)$('uri').value=m.uri;
+  const c=m.cfg;$('fs').value=c.fs;$('lo').value=c.lo/1e9;$('bw').value=c.bw_frac;$('plen').value=c.pulse_len;$('period').value=c.period;$('window').value=c.window;$('port').value=c.port;
   [0,1].forEach(k=>{$('txg'+k).value=c.tx_gain[k];$('rxg'+k).value=c.rx_gain[k]});
   $('tx').value=c.tx;$('rx').value=c.rx;$('cpi').value=c.cpi;$('dspace').value=c.rx_spacing_mm;$('f_dc').checked=!!c.f_dc;FKEYS.forEach(k=>{$(k).value=c[k]});
   const n=$('slowNote');n.classList.toggle('hide',!(slow||sim));
-  n.textContent=slow?'Debug-serial link: about one frame per second. Pulse quality and range profile are valid, but Doppler and displacement need tens of frames per second — connect the board’s data USB or Ethernet port and reconnect with “libiio”.':'Simulator: synthetic scene with a target oscillating around 2.5 m. Not hardware.';
+  n.textContent=slow?'Debug-serial link: about one frame per second. Pulse quality and range profile are valid, but Doppler and displacement need tens of frames per second — connect the board’s data USB or Ethernet port and reconnect with “libiio”.':'Simulator: synthetic scene with a hand waving side to side about 30 cm in front of the array (6 s waving, 3 s still). Not hardware.';
 }
 function applyCfg(){
-  send({cmd:'apply',cfg:{fs:+$('fs').value,lo:+$('lo').value*1e9,bw_frac:+$('bw').value,pulse_len:+$('plen').value,period:+$('period').value,window:$('window').value,
+  sendB({cmd:'apply',cfg:{fs:+$('fs').value,lo:+$('lo').value*1e9,bw_frac:+$('bw').value,pulse_len:+$('plen').value,period:+$('period').value,window:$('window').value,
     tx_gain:[+$('txg0').value,+$('txg1').value],rx_gain:[+$('rxg0').value,+$('rxg1').value]}});
 }
-function pathCfg(){hist.length=0;wf.length=0;send({cmd:'apply',cfg:{tx:+$('tx').value,rx:+$('rx').value,cpi:+$('cpi').value}})}
+function pathCfg(){cb().hist.length=0;cb().wf.length=0;sendB({cmd:'apply',cfg:{tx:+$('tx').value,rx:+$('rx').value,cpi:+$('cpi').value}})}
 const FKEYS=['f_hp_hz','f_sg','f_sg_win','f_sg_order','f_band_lo','f_band_hi','f_window'];
-function softCfg(){send({cmd:'apply',cfg:{rx_spacing_mm:+$('dspace').value}})}
-function filtCfg(){wf.length=0;const c={f_dc:$('f_dc').checked};FKEYS.forEach(k=>{const v=$(k).value;c[k]=(k==='f_sg'||k==='f_window')?v:+v});send({cmd:'apply',cfg:c})}
+function softCfg(){sendB({cmd:'apply',cfg:{rx_spacing_mm:+$('dspace').value}})}
+function filtCfg(){cb().wf.length=0;const c={f_dc:$('f_dc').checked};FKEYS.forEach(k=>{const v=$(k).value;c[k]=(k==='f_sg'||k==='f_window')?v:+v});sendB({cmd:'apply',cfg:c})}
 function filtReset(){$('f_dc').checked=false;$('f_hp_hz').value=0;$('f_sg').value='off';$('f_band_lo').value=0;$('f_band_hi').value=0;$('f_window').value='hann';filtCfg()}
-function toggleLive(){send({cmd:live?'live_stop':'live_start'});if(!live){hist.length=0;wf.length=0}}
+function toggleLive(){const bo=cb();sendB({cmd:bo.live?'live_stop':'live_start'});if(!bo.live){bo.hist.length=0;bo.wf.length=0}}
 
 function onDigital(m){
   const ok=m.results.every(r=>r.pass);
@@ -357,8 +466,8 @@ function onDigital(m){
   redrawAll();
 }
 function grade(v,good,warn,hi=true){if(v==null)return'crit';return (hi?v>=good:v<=good)?'good':(hi?v>=warn:v<=warn)?'warn':'crit'}
-function onOta(m){
-  lastOta=m;$('agBtn').disabled=false;
+function onOta(bo){
+  const m=bo.lastOta;$('agBtn').disabled=false;
   let rows='',allGood=true;
   for(const r of m.results)r.paths.forEach((q,j)=>{const s=r.stats[j];
     const g=[grade(q.comp_snr_db,30,20),grade(s.clip_pct,0.01,1,false),grade(q.phase_jitter_deg,2,6,false)];
@@ -378,16 +487,22 @@ function onOta(m){
   }
   redrawAll();
 }
-function autoGain(){if(!lastOta)return;
-  const g=[0,1].map(j=>Math.min(...lastOta.results.map(r=>r.paths[j].suggest_rx_gain)));
+function autoGain(){const bo=cb();if(!bo.lastOta)return;
+  const g=[0,1].map(j=>Math.min(...bo.lastOta.results.map(r=>r.paths[j].suggest_rx_gain)));
   $('rxg0').value=g[0];$('rxg1').value=g[1];
-  send({cmd:'apply',cfg:{tx_gain:[+$('txg0').value,+$('txg1').value],rx_gain:g}});send({cmd:'step_ota'});
+  sendB({cmd:'apply',cfg:{tx_gain:[+$('txg0').value,+$('txg1').value],rx_gain:g}});sendB({cmd:'step_ota'});
 }
-function onFrame(m){
-  const q=m.quality[m.rx-1],s=m.stats[m.rx-1],slow=state.kind==='serial';
+// every board's frames are collected whichever tab is shown
+function ingest(bo,m){
+  bo.lastFrame=m;
   const A=m.angle,angOk=A&&A.coh>0.5&&A.n_bins>=2&&m.motion_db>6;
-  hist.push({t:m.t,disp:m.disp_mm,mot:m.motion_db,ang:angOk?A.deg:null,ph:angOk?A.dphi_deg:null,coh:A?A.coh:null});
-  if(m.dopp_bin_hz!=null)$('hpInfo').textContent=`1 Hz = ${fmt(0.02584,4)} m/s · Doppler bin ${fmt(m.dopp_bin_hz,2)} Hz · span ±${fmt(m.prf/2,0)} Hz · 0 = edge off`;if(hist.length>450)hist.shift();
+  bo.hist.push({t:m.t,disp:m.disp_mm,mot:m.motion_db,ang:angOk?A.deg:null,ph:angOk?A.dphi_deg:null,coh:A?A.coh:null});if(bo.hist.length>450)bo.hist.shift();
+  if(m.rd_db){bo.wf.push(m.dopp_db);if(bo.wf.length>150)bo.wf.shift()}
+}
+function onFrame(bo,m){
+  const q=m.quality[m.rx-1],s=m.stats[m.rx-1],slow=bo.state.kind==='serial',hist=bo.hist,wf=bo.wf;
+  const A=m.angle,angOk=A&&A.coh>0.5&&A.n_bins>=2&&m.motion_db>6;
+  if(m.dopp_bin_hz!=null)$('hpInfo').textContent=`1 Hz = ${fmt(0.02584,4)} m/s · Doppler bin ${fmt(m.dopp_bin_hz,2)} Hz · span ±${fmt(m.prf/2,0)} Hz · 0 = edge off`;
   const moving=m.motion_db>10;
   $('tiles').innerHTML=
     tile('frame rate',fmt(m.fps,1)+' Hz',slow?'too slow for Doppler':`max |v| ${fmt((m.prf||m.fps)*0.0129,2)} m/s unaliased`,slow?'warn':'')+
@@ -407,9 +522,7 @@ function onFrame(m){
     const hi=Math.max(m.rd_floor_db+45,-60),lo=m.rd_floor_db;
     heatmap('cRD','Delay–Doppler map',`${m.vel.length} Doppler bins over ${fmt(m.vel.length/m.prf,1)} s · circle = strongest mover`,m.rd_db,m.rd_bins,m.vel,
       {xl:'delay bin',yl:'velocity m/s',lo,hi,xdec:0,ydec:3,marks:m.det&&m.det.snr_db>18?[{x:m.det.bin,y:m.det.vel}]:[]});
-    wf.push(m.dopp_db);if(wf.length>150)wf.shift();
-    const z=m.vel.map((_,r)=>wf.map(col=>col[r]));
-    heatmap('cWf','Doppler over time (near bins)','micro-Doppler signature: + is towards the antennas',z,wf.map((_,i)=>i-wf.length+1),m.vel,{xl:'frames ago',yl:'velocity m/s',lo:lo+3,hi:hi+3,xdec:0,ydec:3});
+    waterfall('cWf','Doppler over time (near bins)',bo);
   }
   const t=hist.map(h=>h.t);
   lineChart('cDisp','Radial displacement from carrier phase','λ/2 = 25.8 mm per 360° · relative · only integrates while motion is detected',[{x:t,y:hist.map(h=>h.disp),label:'displacement',color:COL[0]}],{xl:'time s',yl:'mm',dec:1,xdec:1});
@@ -420,9 +533,72 @@ function onFrame(m){
     lineChart('cAngD','Phase per Doppler bin','RX1 − RX2 phase of each velocity component that stands above the floor',[{x:m.vel,y:m.ph_dopp,label:'phase',color:COL[0]}],{xl:'velocity m/s',yl:'degrees',y0:-180,y1:180,marks:[{y:0}],dec:0,xdec:2});
     lineChart('cCoh','Coherence between the receivers','1 = one clear direction · the angle is plotted above 0.5',[{x:t,y:hist.map(h=>h.coh),label:'coherence',color:COL[0]}],{xl:'time s',yl:'coherence',y0:0,y1:1,marks:[{y:0.5,label:'gate'}],dec:2,xdec:1})}
 }
+function waterfall(id,title,bo){
+  const m=bo.lastFrame,wf=bo.wf;if(!m||!m.rd_db||!wf.length)return;
+  const hi=Math.max(m.rd_floor_db+45,-60),lo=m.rd_floor_db;
+  const z=m.vel.map((_,r)=>wf.map(col=>col[r]));
+  heatmap(id,title,'micro-Doppler signature: + is towards the antennas',z,wf.map((_,i)=>i-wf.length+1),m.vel,{xl:'frames ago',yl:'velocity m/s',lo:lo+3,hi:hi+3,xdec:0,ydec:3});
+}
+
+// ---------------------------------------------------------------- both boards
+function combinedHeader(){
+  const ok=B.filter(b=>b.state.connected).length;
+  setConn(ok>0,B.map((b,k)=>`${NAMES[k]}: ${b.state.connected?(b.state.uri||b.state.info.transport):'not connected'}`).join(' · '),ok===B.length?'good':'warn');
+  $('sum').textContent=B.map((b,k)=>b.state.connected?`${NAMES[k]} LO ${(b.state.cfg.lo/1e9).toFixed(3)} GHz`:'').filter(Boolean).join(' · ');
+  $('info').textContent='';
+}
+const GEOM=[['gA1','gA2'],['gB1','gB2']],LOS=['fLoA','fLoB'];
+function fillCombined(force){
+  B.forEach((b,k)=>{const c=b.state.cfg;if(!c||!c.rx_x_mm)return;
+    GEOM[k].forEach((id,j)=>{if(force||document.activeElement!==$(id))$(id).value=c.rx_x_mm[j]});
+    if(force||document.activeElement!==$(LOS[k]))$(LOS[k]).value=(c.lo/1e9).toFixed(3)});
+  $('fConn').textContent=B.map((b,k)=>`board ${NAMES[k]}: ${b.state.connected?(b.live?'live':'connected'):'not connected'}`).join(' · ');
+}
+function connectBoth(){eachBoard(k=>send({cmd:'connect',transport:$('fTransport').value,uri:'',board:k}))}
+function resetBoth(){eachBoard(k=>{send({cmd:'reset_bg',board:k});B[k].hist.length=0;B[k].wf.length=0});fh.length=0}
+function applyGeom(){eachBoard(k=>send({cmd:'apply',board:k,cfg:{rx_x_mm:GEOM[k].map(id=>+$(id).value)}}))}
+function defaultGeom(){[[-75.8,-25.0],[25.0,75.8]].forEach((g,k)=>GEOM[k].forEach((id,j)=>$(id).value=g[j]));applyGeom()}
+function applyLo(){eachBoard(k=>send({cmd:'apply',board:k,cfg:{lo:+$(LOS[k]).value*1e9}}))}
+function ingestFused(m){
+  lastFused=m;const b=m.boards;
+  fh.push({t:m.t,a:b[0]&&b[0].valid?b[0].phi:null,b:b[1]&&b[1].valid?b[1].phi:null,f:m.angle,
+    x:m.pos?m.pos.x_mm:null,z:m.pos?m.pos.z_mm:null,ma:b[0]?b[0].move_db:null,mb:b[1]?b[1].move_db:null,
+    ca:b[0]?b[0].coh:null,cb:b[1]?b[1].coh:null});
+  if(fh.length>450)fh.shift();
+}
+function onFused(m){
+  const b=m.boards,P=m.pos,S=m.strokes,moving=m.move_db>6;
+  $('fWarn').classList.toggle('hide',!m.warn.length);$('fWarn').textContent=m.warn.join(' · ');
+  const bt=k=>{const x=b[k];if(!x)return tile(`board ${NAMES[k]} angle`,'–','not live');
+    return tile(`board ${NAMES[k]} angle`,x.phi!=null?fmt(x.phi,0)+'°':'–',`coherence ${fmt(x.coh,2)} · ${fmt(x.fps,0)} frames/s`,x.valid?'good':'warn')};
+  const last=S.last,dirTxt=d=>d>0?'towards +x (B side)':'towards −x (A side)';
+  $('fTiles').innerHTML=
+    tile('motion',fmt(m.move_db,0)+' dB',moving?'hand moving':'scene static',moving?'good':'')+
+    tile('hand angle',m.angle!=null?fmt(m.angle,0)+'°':'–',m.angle!=null?'from the array centre · + towards +x':'no coherent mover',m.angle!=null?'good':'')+
+    tile('hand position',P?`x ${fmt(P.x_mm,0)} · z ${fmt(P.z_mm,0)}`:'–',P?`mm · about ±${fmt(P.dx_mm,0)} across, ±${fmt(P.dz_mm,0)} in range`:'needs both boards valid')+
+    tile('gesture',S.waving?'waving':last&&last.ago<2?(last.dir>0?'→ swipe':'← swipe'):'–',
+      last?`last stroke ${dirTxt(last.dir)}, ${fmt(last.span,0)}°, ${fmt(last.ago,1)} s ago · ${S.n_recent} in 3 s`:'no strokes yet',S.waving?'good':'')+
+    bt(0)+bt(1);
+  const t=fh.map(h=>h.t),lim=45;
+  lineChart('cFAng','Hand angle over time','each board from its own receive pair, and the combined angle · + towards +x',
+    [{x:t,y:fh.map(h=>h.a),label:'board A',color:COL[0]},{x:t,y:fh.map(h=>h.b),label:'board B',color:COL[1]},{x:t,y:fh.map(h=>h.f),label:'combined',color:COL[2]}],
+    {xl:'time s',yl:'degrees',y0:-lim,y1:lim,marks:[{y:0}],dec:1,xdec:1});
+  if(m.map_db)heatmap('cFPos','Where the hand is (top view)','bright = both boards’ phases fit a hand there · circle = best fit · antennas along z = 0',
+    m.map_db,m.x,m.z,{xl:'x mm (along the antennas)',yl:'z mm (out from the array)',lo:-20,hi:0,unit:'dB',xdec:0,ydec:0,marks:P?[{x:P.x_mm,y:P.z_mm}]:[]});
+  lineChart('cFXZ','Hand position over time','x across the array, z out from it · range (z) is far less certain than x',
+    [{x:t,y:fh.map(h=>h.x),label:'x',color:COL[0]},{x:t,y:fh.map(h=>h.z),label:'z',color:COL[1]}],{xl:'time s',yl:'mm',dec:0,xdec:1});
+  lineChart('cFMot','Motion, both boards','frame-difference power in the near bins (last ≈0.15 s) over each board’s learned quiet level',
+    [{x:t,y:fh.map(h=>h.ma),label:'board A',color:COL[0]},{x:t,y:fh.map(h=>h.mb),label:'board B',color:COL[1]}],{xl:'time s',yl:'dB',y0:-10,y1:50,marks:[{y:6,label:'angle gate'}],xdec:1});
+  waterfall('cFWf0','Doppler over time, board A',B[0]);
+  waterfall('cFWf1','Doppler over time, board B',B[1]);
+  lineChart('cFCoh','Coherence between each board’s receivers','the board’s angle is used above 0.5',
+    [{x:t,y:fh.map(h=>h.ca),label:'board A',color:COL[0]},{x:t,y:fh.map(h=>h.cb),label:'board B',color:COL[1]}],{xl:'time s',yl:'coherence',y0:0,y1:1,marks:[{y:0.5,label:'gate'}],dec:2,xdec:1});
+}
 function redrawAll(){document.querySelectorAll('.chart').forEach(e=>e._redraw&&e._redraw())}
 addEventListener('resize',redrawAll);
 connectWS();
+let tab0=0;try{const v=localStorage.getItem('tab');if(v!=null)tab0=v==='f'?'f':(+v||0)}catch(e){}
+selectTab(tab0);
 </script>
 </body>
 </html>

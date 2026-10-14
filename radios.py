@@ -14,6 +14,10 @@ IIORadio     live streaming over the board's data link (USB gadget / Ethernet).
 SerialRadio  drives the on-board iio tools through the debug UART console.
              Slow (a frame every second or so) but needs only the debug cable.
 SimRadio     synthetic scene, for testing the GUI and DSP without hardware.
+
+Several boards can be open at once (one radio object each). Boards that share
+firmware may report the same serial number and the same 192.168.2.1 address,
+so the libiio USB address (usb:bus.dev.intf) is what tells them apart.
 """
 from __future__ import annotations
 
@@ -342,18 +346,37 @@ class IIORadio:
 
 # ================================================================= simulation
 class SimRadio:
+    """Synthetic scene: leakage, three static reflectors and a hand waving
+    side to side about 30 cm in front of the array. Every simulated board sees
+    the same hand (same clock), each from its own receive-antenna positions."""
     kind = "sim"
 
-    def __init__(self):
+    def __init__(self, board=0):
+        self.board = board
         self.fs, self.lo = 30.72e6, 5.8e9
         self.frame = np.zeros((2, 1024), np.complex64)
         self.loop = 0
         self.txg, self.rxg = [-10, -10], [20, 20]
-        self.rng = np.random.default_rng(1)
-        self.t0 = time.time()
+        self.rng = np.random.default_rng(1 + board)
+        self.t0 = 0.0
+        self.rx_x = np.array([-0.0254, 0.0254]) + (0.0504 if board else 0.0)
+
+    def set_geometry(self, rx_x_mm):
+        """x positions (mm) of RX1, RX2 along the array line; the TX sits midway."""
+        self.rx_x = np.asarray(rx_x_mm, float) * 1e-3
+
+    @staticmethod
+    def hand(t):
+        """Hand position (x, z) in metres: waves for 6 s (+-12 cm side to side
+        at 0.5 Hz, with a small push-pull so there is always radial motion),
+        then holds still at the centre for 3 s."""
+        ph = t % 9.0
+        if ph >= 6.0:
+            return 0.0, 0.30
+        return 0.12 * np.sin(2 * np.pi * 0.5 * ph), 0.30 + 0.02 * np.sin(2 * np.pi * 1.5 * ph)
 
     def info(self):
-        return {"transport": "SIMULATION (no hardware)", "model": "synthetic scene", "chip": "sim",
+        return {"transport": f"SIMULATION board {'AB'[self.board % 2]} (no hardware)", "model": "synthetic scene", "chip": "sim",
                 "fw": "-", "fs": self.fs, "rx_lo": self.lo, "tx_lo": self.lo, "rx_bw": self.fs,
                 "tx_bw": self.fs, "rx_gain": self.rxg, "tx_gain": self.txg, "rates": "", "temp_c": 25.0}
 
@@ -387,8 +410,10 @@ class SimRadio:
             t16 = np.round(self.frame * TX_FS)
             rx = (np.floor(t16.real / 16) + 1j * np.floor(t16.imag / 16)) / RX_FS
         else:
-            R = 2.5 + 0.15 * np.sin(2 * np.pi * 0.25 * t)
+            hx, hz = self.hand(t)
+            tx_x = self.rx_x.mean()
             for j in range(2):
+                path = np.hypot(hx - tx_x, hz) + np.hypot(hx - self.rx_x[j], hz)   # TX -> hand -> RXj
                 g_rx = 10 ** ((self.rxg[j] - 20) / 20)
                 for i in range(2):
                     g = g_rx * 10 ** ((self.txg[i] + 10) / 20)
@@ -396,7 +421,7 @@ class SimRadio:
                     y = self._delay(F[i], 2.3) * leak
                     for rr, a in ((1.2, 0.02), (3.7, 0.01), (6.0, 0.006)):
                         y += self._delay(F[i], 2.3 + 2 * rr * self.fs / 299792458.0) * a * np.exp(-4j * np.pi * rr / lam)
-                    y += self._delay(F[i], 2.3 + 2 * R * self.fs / 299792458.0) * 0.004 * np.exp(-4j * np.pi * R / lam)
+                    y += self._delay(F[i], 2.3 + path * self.fs / 299792458.0) * 0.004 * np.exp(-2j * np.pi * path / lam)
                     rx[j] += g * np.fft.ifft(y)
         k = n // P + 1
         off = int(self.rng.integers(P))
@@ -411,10 +436,19 @@ class SimRadio:
         pass
 
 
-def open_radio(transport="auto", uri="", port="COM5", log=print):
+def scan_usb() -> dict:
+    """{uri: description} of the libiio contexts on USB, e.g. {"usb:2.5.5": ...}."""
+    try:
+        import iio
+        return {u: d for u, d in iio.scan_contexts().items() if u.startswith("usb:")}
+    except Exception:
+        return {}
+
+
+def open_radio(transport="auto", uri="", port="COM5", log=print, board=0):
     """transport: auto | iio | serial | sim"""
     if transport == "sim":
-        return SimRadio()
+        return SimRadio(board)
     if transport in ("auto", "iio"):
         for u in ([uri] if uri else ["usb:", "ip:192.168.2.1", "ip:pluto.local"]):
             try:
