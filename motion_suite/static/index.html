@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion Radar Suite</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Motion Radar Suite <span class="sub">2T2R · 5.8 GHz · physics only</span></div>
+  <div id="nodeTabs" class="tabs"></div>
+  <div class="right"><span id="simBadge" class="badge warn" hidden>SIMULATED</span><span id="conn" class="dot bad" title="server link"></span></div>
+</header>
+
+<section class="controls">
+  <div class="group">
+    <label>Waveform</label>
+    <div class="seg" id="wfSeg"></div>
+  </div>
+  <div class="group">
+    <label>Mode</label>
+    <div class="seg" id="modeSeg">
+      <button data-mode="live" title="TX1 and TX2 take turns: 4-element virtual array, digital beamforming">Live (MIMO)</button>
+      <button data-mode="txbeam" title="Both transmitters radiate together, steered through 12 phases">TX beam scan</button>
+      <button data-mode="ab" title="Cycle the waveforms while someone moves and score each one">Compare waveforms</button>
+    </div>
+  </div>
+  <div class="group">
+    <label>Range gates (m)</label>
+    <div class="gates">
+      <span class="gk local">Local</span><input id="gL0" type="number" step="0.1"><span>–</span><input id="gL1" type="number" step="0.1">
+      <span class="gk back">Back</span><input id="gB0" type="number" step="0.1"><span>–</span><input id="gB1" type="number" step="0.1">
+      <button id="gApply" class="ghost">Apply</button>
+    </div>
+  </div>
+  <div class="group actions">
+    <button id="bRelearn" title="Re-learn the empty-scene background (keep the area still for 2 s)">Relearn background</button>
+    <button id="bCal" title="Walk slowly toward/away along the centre line, 2-5 m">Calibrate angle</button>
+    <button id="bFlip" title="Mirror left/right if angles come out on the wrong side">Flip L/R</button>
+    <button id="bStart" class="ghost">Stop node</button>
+  </div>
+</section>
+
+<main class="grid">
+  <article class="card c5">
+    <div class="head"><h2>Range–Doppler, cleaned</h2>
+      <div class="seg small" id="rdView"><button data-v="clean" class="on">Cleaned</button><button data-v="raw">Raw</button></div></div>
+    <div class="canvwrap"><canvas id="cRD"></canvas><div id="rdBanner" class="banner" hidden></div></div>
+    <div class="foot" id="rdFoot"></div>
+  </article>
+
+  <article class="card c4">
+    <div class="head"><h2>Range–angle (MIMO beamforming)</h2><span class="hint" id="raHint"></span></div>
+    <div class="canvwrap"><canvas id="cRA"></canvas></div>
+    <div class="foot">Bartlett scan of the 4-element virtual array over every cell ≥ 10 dB over background. Dashed wedge = unambiguous angles for the antenna layout in nodes.json; dotted ring = near-field limit (2D²/λ). Steering uses exact paths, so it holds inside it too.</div>
+  </article>
+
+  <article class="card c3">
+    <div class="head"><h2>Target</h2><span id="zoneTag" class="tag"></span></div>
+    <div class="kv" id="tgt"></div>
+    <h3>Cleaning, near the antennas (0–2 m)</h3>
+    <div id="budget" class="budget"></div>
+  </article>
+
+  <article class="card c6">
+    <div class="head"><h2>Micro-Doppler · <span class="gk local">local</span> <span class="dim" id="gLtxt"></span></h2><span class="act" id="actL"></span></div>
+    <div class="canvwrap spec"><canvas id="cSL"></canvas></div>
+    <div class="feats" id="fL"></div>
+  </article>
+  <article class="card c6">
+    <div class="head"><h2>Body motion · <span class="gk back">back</span> <span class="dim" id="gBtxt"></span></h2><span class="act" id="actB"></span></div>
+    <div class="canvwrap spec"><canvas id="cSB"></canvas></div>
+    <div class="feats" id="fB"></div>
+  </article>
+
+  <article class="card c4">
+    <div class="head"><h2>Receive beam on the target</h2></div>
+    <div class="canvwrap"><canvas id="cBP"></canvas></div>
+    <div class="foot" id="bpFoot">Solid: measured spatial spectrum of the target cells. Dashed: the beam steered at it (array factor). Gain is SNR after combining 4 paths vs one path; 6.0 dB is the ceiling.</div>
+  </article>
+
+  <article class="card c4">
+    <div class="head"><h2>Physical TX beams</h2><span class="hint" id="tbHint"></span></div>
+    <div class="canvwrap"><canvas id="cTB"></canvas></div>
+    <div class="canvwrap short"><canvas id="cTB2"></canvas></div>
+    <div class="foot" id="tbFoot">Switch mode to <b>TX beam scan</b>: TX1 and TX2 radiate together with TX2 advanced by 0…330°. Each lobe is one real beam, shaded by the target power it returned.</div>
+  </article>
+
+  <article class="card c4">
+    <div class="head"><h2>Room (top view)</h2><span class="hint">all nodes</span></div>
+    <div class="canvwrap"><canvas id="cRoom"></canvas></div>
+    <div class="foot" id="roomFoot">Each SDR places its target from range and angle. With a second SDR, both are fused here; the boards are not phase-locked, so they are combined as tracks, not coherently.</div>
+  </article>
+
+  <article class="card c12">
+    <div class="head"><h2>Which waveform works best for human motion?</h2>
+      <div class="abctl">dwell <input id="abDwell" type="number" value="6" min="3" step="1"> s · rounds <input id="abRounds" type="number" value="3" min="1" step="1">
+      <button id="bAB">Start comparison</button><button id="bABstop" class="ghost">Stop</button></div></div>
+    <div id="abProg" class="prog" hidden><div class="bar"><i></i></div><span></span></div>
+    <p class="dim">Spoken cues guide the run: the area must be empty while each waveform learns its background, then walk around near and far while the waveforms take turns (round-robin, so everyone sees the same motion). All waveforms use the same DAC peak, so duty cycle decides energy.</p>
+    <div id="abResult"></div>
+  </article>
+
+  <article class="card c12 logcard">
+    <details><summary>Log</summary><pre id="log"></pre></details>
+  </article>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

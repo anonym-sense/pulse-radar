@@ -1,0 +1,46 @@
+{
+  "room": {
+    "x0": -2.5, "x1": 2.5, "y0": 0.0, "y1": 8.0,
+    "note": "metres, top view. Origin = SDR A array centre, +y = SDR A boresight, +x = toward the RX end of SDR A's antenna row (unless flipped)."
+  },
+  "nodes": [
+    {
+      "id": "A",
+      "name": "SDR A",
+      "uri": "auto",
+      "enabled": true,
+      "lo": 5.845e9,
+      "waveform": "fmcw",
+      "tx_gain": [0, 0],
+      "rx_gain": [38, 38],
+      "antennas": {
+        "tx": [[0.0, 0.0], [0.0508, 0.0]],
+        "rx": [[0.1016, 0.0], [0.1524, 0.0]],
+        "measured": false,
+        "note": "[x, y] in metres: x along the row toward the RX side, y toward the scene, any origin. Measure feed point to feed point: TX = pole antennas, RX = patch centres. Then set measured: true."
+      },
+      "pose": {"x": 0.0, "y": 0.0, "heading": 0},
+      "color": "#3987e5",
+      "flip": false,
+      "local": [0.3, 2.5],
+      "back": [4.0, 9.0],
+      "r_max": 12
+    },
+    {
+      "id": "B",
+      "name": "SDR B (second board, not connected yet)",
+      "uri": "auto",
+      "enabled": false,
+      "lo": 5.765e9,
+      "waveform": "fmcw",
+      "tx_gain": [0, 0],
+      "rx_gain": [38, 38],
+      "pose": {"x": 2.5, "y": 4.0, "heading": -90},
+      "color": "#d95926",
+      "flip": false,
+      "local": [0.3, 2.5],
+      "back": [4.0, 9.0],
+      "r_max": 12
+    }
+  ]
+}
